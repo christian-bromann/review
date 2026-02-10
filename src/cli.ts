@@ -21,9 +21,7 @@ ${c.bold}Examples:${c.reset}
 ${c.bold}Environment variables:${c.reset}
   ANTHROPIC_API_KEY                Required. LLM provider key.
   GITHUB_TOKEN                     Required. For fetching PR data and posting reviews.
-  SANDBOX_PROVIDER                 Optional. "deno" (default) or "local" (Node VFS).
-  DENO_SUBHOSTING_ACCESS_TOKEN     Required for Deno sandbox.
-  DENO_SUBHOSTING_DEPLOY_ORG_ID   Required for Deno sandbox.
+  DENO_DEPLOY_TOKEN                Required for Deno sandbox.
 `);
     process.exit(0);
   }

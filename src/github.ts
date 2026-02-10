@@ -122,6 +122,65 @@ export async function fetchLinkedIssues(
 }
 
 // ---------------------------------------------------------------------------
+// CI checks & existing reviews
+// ---------------------------------------------------------------------------
+
+export async function fetchCheckRuns(
+  owner: string,
+  repo: string,
+  ref: string
+): Promise<Array<{ name: string; status: string; conclusion: string | null; html_url: string }>> {
+  const res = await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100`
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as any;
+  return (data.check_runs ?? []).map((cr: any) => ({
+    name: cr.name,
+    status: cr.status,
+    conclusion: cr.conclusion,
+    html_url: cr.html_url ?? "",
+  }));
+}
+
+export async function fetchExistingReviews(
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<Array<{ user: string; state: string; body: string; submitted_at: string }>> {
+  const res = await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as any[];
+  return data.map((r: any) => ({
+    user: r.user?.login ?? "unknown",
+    state: r.state,
+    body: r.body ?? "",
+    submitted_at: r.submitted_at ?? "",
+  }));
+}
+
+export async function fetchReviewComments(
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<Array<{ user: string; body: string; path: string; line: number | null; created_at: string }>> {
+  const res = await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as any[];
+  return data.map((c: any) => ({
+    user: c.user?.login ?? "unknown",
+    body: c.body ?? "",
+    path: c.path ?? "",
+    line: c.line ?? c.original_line ?? null,
+    created_at: c.created_at ?? "",
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Write operations (always require auth)
 // ---------------------------------------------------------------------------
 

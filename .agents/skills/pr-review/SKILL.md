@@ -58,19 +58,48 @@ Rules for suggestions:
 - Only comment on lines that are **part of the diff** (added or modified lines)
 - If you need to reference unchanged code for context, mention the file and function name instead of a line number
 
-## Tone
+## Tone & wording
 
-- Be **constructive** — suggest solutions, not just problems
+- **Start with a thank-you** — e.g. "Thanks for the contribution!" or "Thanks for tackling this!" to acknowledge the author's effort
+- **Don't state the obvious** — never re-explain what the code does or how the fix works. The author already knows; the diff speaks for itself
+- **Keep approvals short** — if the PR looks good, a concise "LGTM 👍" with a brief thank-you is perfectly fine. No need for a full analysis, summary, or "Code Quality" section
+- **Skip code quality commentary** unless there are **severe** issues not caught by automated tooling (prettier, eslint, CI). Don't comment on formatting, naming style, or minor preferences
+- **Don't duplicate information** — if you approve, don't include a "Summary", "Analysis", "Verification", or "Risk Assessment" section. Those repeat what the diff already shows
+- Be **constructive** — when you do leave feedback, suggest solutions, not just problems
 - Phrase as questions when unsure: "Could this race if called concurrently?"
-- Acknowledge good patterns: "Nice use of X here"
 - Avoid subjective style debates unless they hurt readability
 - Assume good intent — the author may have context you don't
+
+## Follow-up reviews
+
+When the PR already has prior reviews (including your own):
+
+- **Read the conversation history** — check existing reviews and comments before writing yours
+- If you previously requested changes and the author addressed them, **acknowledge that** and approve (or note remaining items) — don't write a fresh review from scratch
+- **Follow the conversation naturally** — reference earlier feedback, e.g. "The issue I flagged earlier around X looks good now"
+- Don't repeat feedback that was already addressed
+
+## CI checks
+
+Before submitting your review:
+
+1. **Check CI status** — look at the check runs / status checks provided in the PR context
+2. If checks are **failing**, investigate the failure logs and mention it in your review with guidance on how to fix
+3. If checks are **passing**, no need to mention them
+
+## Changesets
+
+For monorepos or projects that use changesets:
+
+1. **Verify a changeset was committed** — look for files in `.changeset/` in the diff
+2. If a changeset is **missing** and the PR introduces user-facing changes, mention it in your review and guide the author:
+   - "Looks like this PR is missing a changeset. You can add one by running `npx changeset` and committing the generated file."
+3. If the PR is purely internal (CI, tests, docs), a changeset may not be required — use your judgment
 
 ## Monorepos
 
 - Focus only on the packages changed in the diff
 - Don't try to install dependencies or build the entire project
-- Check if the changeset / version bump is included when needed
 
 ## Review verdicts
 

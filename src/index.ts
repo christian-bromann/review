@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S deno run -A --env-file
 /**
  * review — AI-powered PR reviewer with sandboxed code analysis
  *
@@ -9,12 +9,18 @@
  *   npx review langchain-ai/langchainjs#7898
  *   npx review https://github.com/langchain-ai/langchainjs/pull/7898
  *   npx review langchain-ai/langchainjs#7898 --branch fix/parser
- *   SANDBOX_PROVIDER=local npx review langchain-ai/langchainjs#7898
  */
 
 import { parseArgs } from "./cli.ts";
 import { c, header, step, info } from "./display.ts";
-import { fetchPR, fetchPRFiles, fetchLinkedIssues } from "./github.ts";
+import {
+  fetchPR,
+  fetchPRFiles,
+  fetchLinkedIssues,
+  fetchCheckRuns,
+  fetchExistingReviews,
+  fetchReviewComments,
+} from "./github.ts";
 import { createSandbox } from "./sandbox.ts";
 import { runReview } from "./agent.ts";
 
@@ -75,11 +81,59 @@ async function main() {
     }
   }
 
+  // Fetch CI check runs
+  step("🔍", "Fetching CI status...");
+  const checkRuns = await fetchCheckRuns(
+    args.owner,
+    args.repo,
+    pr.head.sha
+  );
+  const failing = checkRuns.filter(
+    (cr) => cr.conclusion === "failure" || cr.conclusion === "cancelled"
+  );
+  if (checkRuns.length > 0) {
+    info(
+      `${checkRuns.length} check(s): ${checkRuns.filter((cr) => cr.conclusion === "success").length} passing, ${failing.length} failing`
+    );
+  } else {
+    info("No CI checks found");
+  }
+
+  // Fetch existing reviews & comments
+  step("💬", "Fetching existing reviews...");
+  const existingReviews = await fetchExistingReviews(
+    args.owner,
+    args.repo,
+    args.prNumber
+  );
+  const reviewComments = await fetchReviewComments(
+    args.owner,
+    args.repo,
+    args.prNumber
+  );
+  if (existingReviews.length > 0) {
+    info(`${existingReviews.length} existing review(s) found`);
+    for (const r of existingReviews) {
+      info(`  @${r.user}: ${r.state}`);
+    }
+  }
+  if (reviewComments.length > 0) {
+    info(`${reviewComments.length} inline comment(s)`);
+  }
+
+  // Check for changeset
+  const hasChangeset = files.some((f) =>
+    f.filename.startsWith(".changeset/") && f.status === "added"
+  );
+  if (!hasChangeset) {
+    info("⚠️  No changeset file detected in this PR");
+  }
+
   console.log(
-    `\n${c.dim}  The agent will clone the repo into a sandbox, review the code,`
+    `\n${c.dim}  The agent will use the pre-cloned repo in the sandbox, check out`
   );
   console.log(
-    `  and propose a review. You'll approve before anything is posted.${c.reset}\n`
+    `  the PR branch, and review the code. You'll approve before anything is posted.${c.reset}\n`
   );
 
   // Create sandbox
@@ -94,7 +148,8 @@ async function main() {
       files,
       linkedIssues,
       args.owner,
-      args.repo
+      args.repo,
+      { checkRuns, existingReviews, reviewComments, hasChangeset }
     );
 
     header("DONE");

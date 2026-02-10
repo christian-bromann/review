@@ -6,7 +6,7 @@ Built with [Deep Agents](https://docs.langchain.com/oss/javascript/deepagents/ov
 
 ## How it works
 
-```
+```txt
 npx review langchain-ai/langchainjs#7898
          │
          ▼
@@ -112,7 +112,7 @@ This means the agent does all the analysis work, but a human always has the fina
 
 ## Example output
 
-```
+```txt
 ──────────────────────────────────────────────────────────────
   review — AI-powered PR reviewer
 ──────────────────────────────────────────────────────────────
@@ -180,7 +180,7 @@ This means the agent does all the analysis work, but a human always has the fina
 ## Environment variables
 
 | Variable | Required | Description |
-|----------|----------|-------------|
+| -------- | -------- | ----------- |
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key for the LLM |
 | `GITHUB_TOKEN` | Yes | GitHub token for API access and posting reviews |
 | `SANDBOX_PROVIDER` | No | `"deno"` (default) or `"local"` |
@@ -190,7 +190,7 @@ This means the agent does all the analysis work, but a human always has the fina
 ## Sandbox providers
 
 | Provider | Isolation | Speed | Requirements |
-|----------|-----------|-------|-------------|
+| -------- | --------- | ----- | ------------ |
 | **Deno** (default) | Cloud microVM | Fast cold start | Deno Deploy token |
 | **Node VFS** (local) | In-memory VFS | Instant | None |
 | [Modal](https://docs.langchain.com/oss/javascript/integrations/providers/modal) | Cloud container | GPU support | Modal setup |
@@ -198,7 +198,7 @@ This means the agent does all the analysis work, but a human always has the fina
 
 ## Project structure
 
-```
+```txt
 src/
 ├── index.ts          # CLI entry point & main orchestration
 ├── cli.ts            # Argument parsing (owner/repo#number or full URL)
