@@ -1,5 +1,10 @@
 import type { PRData, PRFile, Review } from "./types.ts";
 
+// ---------------------------------------------------------------------------
+// Headers helpers
+// ---------------------------------------------------------------------------
+
+/** Headers with auth token for write operations. */
 function ghHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
@@ -12,19 +17,57 @@ function ghHeaders(): Record<string, string> {
   return headers;
 }
 
+/** Headers WITHOUT auth — for read-only calls on public repos when the token
+ *  is rejected by an org (e.g. orgs that block classic PATs). */
+function publicHeaders(): Record<string, string> {
+  return {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "ai-review-cli",
+  };
+}
+
+/**
+ * Fetch a URL from the GitHub API. On 403 / 401, automatically retries
+ * without the auth token (works for public repos whose org blocks classic PATs).
+ */
+async function ghFetch(url: string): Promise<Response> {
+  const res = await fetch(url, { headers: ghHeaders() });
+
+  if ((res.status === 403 || res.status === 401) && process.env.GITHUB_TOKEN) {
+    // Some orgs (e.g. langchain-ai) block classic PATs.
+    // Retry without auth — works fine for public repos.
+    const retry = await fetch(url, { headers: publicHeaders() });
+    if (retry.ok) return retry;
+  }
+
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// Read operations
+// ---------------------------------------------------------------------------
+
 export async function fetchPR(
   owner: string,
   repo: string,
   number: number
 ): Promise<PRData> {
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`,
-    { headers: ghHeaders() }
+  const res = await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${number}`
   );
   if (!res.ok) {
     if (res.status === 404) {
       throw new Error(
         `#${number} is not a pull request. This tool only reviews PRs.`
+      );
+    }
+    if (res.status === 403 || res.status === 401) {
+      const body = await res.text();
+      throw new Error(
+        `GitHub API returned ${res.status}.\n` +
+          `  → Some orgs block classic PATs — use a fine-grained token instead\n` +
+          `  → Fine-grained token: set "Pull requests" to "Read and write"\n` +
+          `  → Details: ${body}`
       );
     }
     throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
@@ -37,9 +80,8 @@ export async function fetchPRFiles(
   repo: string,
   number: number
 ): Promise<PRFile[]> {
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`,
-    { headers: ghHeaders() }
+  const res = await ghFetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`
   );
   if (!res.ok) throw new Error(`Failed to fetch PR files: ${res.status}`);
   return (await res.json()) as PRFile[];
@@ -60,9 +102,8 @@ export async function fetchLinkedIssues(
   for (const match of issueRefs) {
     const issueNum = parseInt(match[1]!, 10);
     try {
-      const res = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/issues/${issueNum}`,
-        { headers: ghHeaders() }
+      const res = await ghFetch(
+        `https://api.github.com/repos/${owner}/${repo}/issues/${issueNum}`
       );
       if (res.ok) {
         const data = (await res.json()) as any;
@@ -79,6 +120,10 @@ export async function fetchLinkedIssues(
 
   return issues;
 }
+
+// ---------------------------------------------------------------------------
+// Write operations (always require auth)
+// ---------------------------------------------------------------------------
 
 export async function postReviewToGitHub(
   owner: string,
@@ -127,6 +172,15 @@ export async function postReviewToGitHub(
 
   if (!res.ok) {
     const error = await res.text();
+    if (res.status === 403) {
+      throw new Error(
+        `GitHub returned 403 Forbidden.\n` +
+          `  → Some orgs block classic PATs — use a fine-grained token\n` +
+          `  → Fine-grained token: set "Pull requests" to "Read and write"\n` +
+          `  → Make sure the token has access to ${owner}/${repo}\n` +
+          `  → Details: ${error}`
+      );
+    }
     throw new Error(`Failed to post review: ${res.status} — ${error}`);
   }
 

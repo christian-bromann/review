@@ -207,13 +207,25 @@ src/
 ├── agent.ts          # Agent setup, streaming, HITL approval flow
 ├── display.ts        # ANSI colors, terminal formatting, review display
 └── types.ts          # Shared interfaces (PRData, Review, etc.)
+
+.agents/
+└── skills/
+    └── pr-review/
+        └── SKILL.md  # PR review best practices (auto-loaded into sandbox)
 ```
+
+## Skills
+
+Review best practices live in `.deepagents/skills/pr-review/SKILL.md` following the [Agent Skills](https://agentskills.io/specification) spec. At startup, all skills in `.deepagents/skills/` are uploaded into the sandbox and passed to `createDeepAgent` via the `skills` parameter so the agent discovers them automatically.
+
+You can customise the review behaviour by editing `SKILL.md` — for example, adding project-specific conventions, changing severity levels, or adjusting the tone. Add more skills by creating new subdirectories with their own `SKILL.md`.
 
 ## Key concepts demonstrated
 
 - **`createDeepAgent`** with sandbox backend — agent gets `execute`, `read_file`, `edit_file`, `ls`, `glob`, `grep`
 - **Custom tools** — `submit_review` is a user-defined tool with a zod schema
-- **Human-in-the-Loop** — `interruptOn` pauses the agent before posting; resumes on approval via `Command`
+- **Skills** — `.deepagents/skills/` loaded into the sandbox and auto-discovered by the agent
+- **Human-in-the-Loop** — `interruptOn` pauses the agent before posting; review posted directly after approval
 - **`MemorySaver`** — checkpointer required for HITL state persistence
 - **GitHub API** — fetch PR details, post structured reviews with line comments
 

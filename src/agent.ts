@@ -1,6 +1,6 @@
 import { createDeepAgent } from "deepagents";
 import { ChatAnthropic } from "@langchain/anthropic";
-import { MemorySaver, Command } from "@langchain/langgraph";
+import { MemorySaver } from "@langchain/langgraph";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
@@ -21,7 +21,7 @@ export async function runReview(
   });
 
   // -----------------------------------------------------------------------
-  // submit_review tool — posts to GitHub, gated by HITL
+  // submit_review tool — HITL-gated; we post to GitHub ourselves after approval
   // -----------------------------------------------------------------------
 
   const reviewSchema = z.object({
@@ -58,25 +58,17 @@ export async function runReview(
       .describe("Line-specific review comments on the diff"),
   });
 
+  // The submit_review tool is HITL-gated — the agent calls it to propose a
+  // review, but execution is interrupted so we can show it to the human first.
+  // We post to GitHub ourselves after approval (not via the agent resume).
   const submitReviewTool = tool(
-    async (args: Review) => {
-      try {
-        const result = await postReviewToGitHub(
-          owner,
-          repo,
-          pr.number,
-          pr.head.sha,
-          args
-        );
-        return `Review posted successfully! View at: ${result.html_url}`;
-      } catch (err: any) {
-        return `Failed to post review: ${err.message}`;
-      }
+    async (_args: Review) => {
+      return "Review submitted for human approval.";
     },
     {
       name: "submit_review",
       description:
-        "Submit your code review to GitHub. A human will review your proposed comments before they are posted. Call this once you have completed your review.",
+        "Submit your code review for human approval before it is posted to GitHub. A human will review your proposed comments first. Call this once you have completed your review.",
       schema: reviewSchema,
     }
   );
@@ -95,6 +87,7 @@ export async function runReview(
     model,
     backend: sandbox,
     tools: [submitReviewTool],
+    skills: ["./.agents/skills/pr-review/SKILL.md"],
     interruptOn: { submit_review: true },
     checkpointer,
     systemPrompt: `You are an expert code reviewer working inside an isolated sandbox.
@@ -103,33 +96,26 @@ You have been given a pull request to review. Your job is to:
 1. Clone the repository and check out the PR branch
 2. Understand the changes by reading the diff and relevant source files
 3. Check for bugs, logic errors, edge cases, security issues, and style problems
-4. Run tests if a test suite exists to verify correctness
+4. Optionally run tests if a test suite exists and it's practical to do so
 5. Submit a thorough code review using the submit_review tool
 
 ## Setup commands
 \`\`\`bash
-git clone --depth 30 --branch ${pr.head.ref} --single-branch ${cloneUrl} /workspace
-cd /workspace
+git clone --depth 30 --branch ${pr.head.ref} --single-branch ${cloneUrl} /tmp/repo
+cd /tmp/repo
 git fetch origin ${pr.base.ref}:refs/remotes/origin/${pr.base.ref} --depth 30
 \`\`\`
 
-## Review guidelines
-- Focus on the **diff** between \`origin/${pr.base.ref}\` and \`HEAD\`
-- Run \`git diff origin/${pr.base.ref}...HEAD\` to see all changes
-- Read full files for context when needed (don't just review the diff in isolation)
-- Check that tests exist for new functionality
-- Look for: bugs, security issues, performance problems, missing error handling, unclear naming
-- Be constructive and specific — suggest fixes, not just problems
-- Use \`\`\`suggestion blocks for concrete code fixes
-- Line numbers in comments MUST refer to lines in the NEW version of the file
-- Only comment on lines that are part of the diff (added or modified lines)
+After cloning, run \`git diff origin/${pr.base.ref}...HEAD\` to see all changes.
 
 ## Important
-- Work inside /workspace after cloning
-- Use \`edit_file\` and \`read_file\` to explore the code
-- Use \`execute\` to run git commands and tests
+- Clone into /tmp/repo (the root filesystem may be read-only)
+- Work inside /tmp/repo after cloning
+- Use \`read_file\` to explore the code for context
+- Use \`execute\` to run git commands
 - When ready, call \`submit_review\` with your complete review
-- Do NOT post partial reviews — collect all comments first, then submit once`,
+- Do NOT post partial reviews — collect all comments first, then submit once
+- Do NOT install dependencies or build the project — focus on the code review`,
   });
 
   // -----------------------------------------------------------------------
@@ -258,27 +244,25 @@ git fetch origin ${pr.base.ref}:refs/remotes/origin/${pr.base.ref} --depth 30
   if (answer === "y" || answer === "yes") {
     step("📤", "Posting review to GitHub...");
 
-    const resumeStream = await agent.stream(
-      new Command({ resume: { decisions: [{ type: "approve" }] } }),
-      { ...config, streamMode: "updates" }
-    );
-
-    for await (const chunk of resumeStream) {
-      for (const [_nodeName, update] of Object.entries(chunk) as [
-        string,
-        any,
-      ][]) {
-        if (!update?.messages) continue;
-        for (const msg of update.messages) {
-          if (msg.constructor?.name === "ToolMessage" || msg.type === "tool") {
-            const content =
-              typeof msg.content === "string"
-                ? msg.content
-                : JSON.stringify(msg.content);
-            console.log(`${c.green}  ✓ ${content}${c.reset}`);
-          }
-        }
-      }
+    // Post directly — we already have the review data from the interrupted
+    // tool call. This is more reliable than resuming the agent which can
+    // replay the entire conversation.
+    try {
+      const result = await postReviewToGitHub(
+        owner,
+        repo,
+        pr.number,
+        pr.head.sha,
+        pendingReview
+      );
+      console.log(
+        `${c.green}  ✓ Review posted successfully! View at: ${result.html_url}${c.reset}`
+      );
+    } catch (err: any) {
+      console.error(
+        `${c.red}  ✗ Failed to post review: ${err.message}${c.reset}`
+      );
+      return null;
     }
 
     return pendingReview;
