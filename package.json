@@ -1,0 +1,45 @@
+{
+  "name": "review",
+  "version": "0.1.0",
+  "description": "AI-powered PR reviewer — clones the branch into a sandbox, reviews the code, and posts to GitHub after your approval",
+  "module": "src/index.ts",
+  "type": "module",
+  "bin": {
+    "review": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node --minify && chmod +x dist/index.js",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "deepagents": "latest",
+    "langchain": "latest",
+    "@langchain/anthropic": "latest",
+    "@langchain/core": "latest",
+    "@langchain/langgraph": "latest",
+    "@langchain/deno": "latest",
+    "@langchain/node-vfs": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "keywords": [
+    "ai",
+    "code-review",
+    "pr-review",
+    "github",
+    "langchain",
+    "deepagents",
+    "sandbox",
+    "cli"
+  ],
+  "license": "MIT"
+}
