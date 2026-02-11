@@ -1,40 +1,6 @@
 import type { PRData, PRFile, ReviewContext, LinkedIssue } from "./types.ts";
 import { VOLUME_MOUNT, PNPM_STORE } from "./sandbox.ts";
 
-/**
- * Build the setup commands for the sandbox.
- * @param pr - The pull request data.
- * @returns The setup commands.
- */
-function buildSetupCommands(pr: PRData): string {
-  const repoDir = VOLUME_MOUNT;
-  const isFork = pr.head.repo.full_name !== pr.base.repo.full_name;
-  const headRemote = isFork ? "pr-fork" : "origin";
-  const headCloneUrl = pr.head.repo.clone_url;
-
-  if (isFork) {
-    return `\`\`\`bash
-cd ${repoDir}
-git remote add ${headRemote} ${headCloneUrl} || git remote set-url ${headRemote} ${headCloneUrl}
-git fetch ${headRemote} ${pr.head.ref}:refs/remotes/${headRemote}/${pr.head.ref} --depth 200
-git fetch origin ${pr.base.ref}:refs/remotes/origin/${pr.base.ref} --depth 200
-git checkout -B ${pr.head.ref} ${headRemote}/${pr.head.ref}
-pnpm install --store-dir ${PNPM_STORE}
-\`\`\`
-
-**This PR is from a fork** (\`${pr.head.repo.full_name}\`), so the branch does NOT exist on \`origin\`.
-You MUST add the fork as a separate remote (\`${headRemote}\`) and fetch from it. Do NOT try to fetch the branch from \`origin\` — it will fail.`;
-  }
-
-  return `\`\`\`bash
-cd ${repoDir}
-git fetch origin ${pr.head.ref}:refs/remotes/origin/${pr.head.ref} --depth 200
-git fetch origin ${pr.base.ref}:refs/remotes/origin/${pr.base.ref} --depth 200
-git checkout -B ${pr.head.ref} origin/${pr.head.ref}
-pnpm install --store-dir ${PNPM_STORE}
-\`\`\``;
-}
-
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -42,34 +8,39 @@ pnpm install --store-dir ${PNPM_STORE}
 /**
  * Build the system prompt that instructs the agent on how to review a PR.
  */
-export function buildSystemPrompt(pr: PRData): string {
+export function buildSystemPrompt(pr: PRData, opts: { depsInstalled: boolean }): string {
   const repoDir = VOLUME_MOUNT;
-  const setupCommands = buildSetupCommands(pr);
+
+  const depsNote = opts.depsInstalled
+    ? `dependencies installed. You can start reviewing immediately — do NOT run
+git checkout, git fetch, or pnpm install.`
+    : `the branch checked out. Dependency installation failed during setup (likely OOM).
+You can still review code by reading files. If you need to run tests, try:
+\`cd ${repoDir} && NODE_OPTIONS=--max-old-space-size=3584 pnpm install --store-dir ${PNPM_STORE}\`
+Do NOT run git checkout or git fetch — that is already done.`;
 
   return `You are an expert code reviewer working inside an isolated sandbox.
-You have been given a pull request to review. Your job is to:
+You have been given a pull request to review. The repository is already set up:
+the PR branch (\`${pr.head.ref}\`) is checked out at \`${repoDir}\` with
+${depsNote}
 
-1. Check out the PR branch on the pre-cloned repository
-2. Install any new/changed dependencies
-3. Understand the changes by reading the diff and relevant source files
-4. Check for bugs, logic errors, edge cases, security issues, and style problems
-5. Check CI status and changeset presence (details provided in context)
-6. Optionally run tests if a test suite exists and it's practical to do so
-7. Submit a code review using the submit_review tool
+Your job is to:
+1. Understand the changes by reading the diff (provided below) and relevant source files
+2. Check for bugs, logic errors, edge cases, security issues, and style problems
+3. Check CI status and changeset presence (details provided in context)
+4. Optionally run tests if a test suite exists and it's practical to do so
+5. Submit a code review using the submit_review tool
 
-## Setup commands (follow EXACTLY — do NOT deviate)
-The repository is already cloned at \`${repoDir}\` on a read-only snapshot with
-dependencies pre-installed on the default branch. The \`origin\` remote points
-to \`${pr.base.repo.full_name}\`.
-**Do NOT checkout \`${pr.base.ref}\`** — it is already available as a remote ref.
-Run these commands in order:
+## Efficient exploration (IMPORTANT — read files in parallel)
+- **Batch your \`read_file\` calls**: when you need to read multiple files, call them ALL in a single turn rather than one at a time. For example, if you need to read 5 files, issue 5 \`read_file\` calls in parallel — don't read one, wait, read the next, etc.
+- **Plan your reads**: look at the file list and diffs first, identify ALL files you need more context on, then read them all at once
+- **Use \`execute\` for batch operations too**: e.g. \`grep -rn\` across multiple directories in one command
+- The diffs for each changed file are provided in the user message. Only use \`read_file\` when you need additional context beyond the diff (e.g. surrounding code, imported modules, type definitions)
+- You can run \`git diff origin/${pr.base.ref}...HEAD\` if you need the full diff, but the per-file patches are already included below
 
-${setupCommands}
-
-- The \`git fetch\` for \`${pr.base.ref}\` is ONLY so \`git diff\` works — do NOT check it out.
-- \`pnpm install\` MUST run AFTER \`git checkout\` so it picks up dependency changes from the PR branch.
-
-After checkout, run \`git diff origin/${pr.base.ref}...HEAD\` to see all changes.
+## First step
+Check if \`${repoDir}/AGENTS.md\` exists and read it — it contains project-specific guidelines.
+You can read AGENTS.md and other context files in the same parallel batch.
 
 ## Tone & wording rules (CRITICAL — follow these strictly)
 - **Start with a thank-you** — e.g. "Thanks for the contribution!" or "Thanks for tackling this!"
@@ -97,19 +68,42 @@ If the PR context includes existing reviews or review comments:
 - If the PR is purely internal (CI, tests, docs) or a changeset is present, don't mention changesets
 
 ## Important
-- The repo is pre-cloned at ${repoDir} — do NOT clone again
-- Work inside ${repoDir} after checkout
-- After checkout, check if \`${repoDir}/AGENTS.md\` exists and read it — it contains project-specific guidelines for how to work with the codebase (test commands, coding conventions, etc.)
-- Use \`read_file\` to explore the code for context
-- Use \`execute\` to run git commands
+- The repo is already checked out at ${repoDir} with the PR branch — do NOT clone again or run git checkout/fetch
+- Use \`read_file\` to explore the code for context — **batch multiple reads in a single turn**
+- Use \`execute\` to run git commands or tests
 - When ready, call \`submit_review\` with your complete review
 - Do NOT post partial reviews — collect all comments first, then submit once`;
 }
 
 /**
+ * Group files by their top-level directory for better context organization.
+ */
+function groupFilesByDirectory(files: PRFile[]): Map<string, PRFile[]> {
+  const groups = new Map<string, PRFile[]>();
+  for (const file of files) {
+    // Use the first two path segments as the group key, or the full dirname
+    const parts = file.filename.split("/");
+    const groupKey = parts.length > 2
+      ? parts.slice(0, 2).join("/")
+      : parts.length > 1
+        ? parts[0]
+        : "(root)";
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, []);
+    }
+    groups.get(groupKey)!.push(file);
+  }
+  return groups;
+}
+
+/** Max characters per patch before truncation. */
+const PATCH_TRUNCATION_LIMIT = 12_000;
+
+/**
  * Build the user-facing message that contains full PR context
  * (metadata, diffs, CI status, changeset info, review history).
- * 
+ *
  * @param pr - The pull request data.
  * @param files - The files in the pull request.
  * @param linkedIssues - The linked issues.
@@ -146,19 +140,27 @@ export function buildUserMessage(
     }
   }
 
-  // ---- Changed files / diffs ----
+  // ---- Changed files / diffs (grouped by directory) ----
   parts.push(`## Changed Files\n`);
-  for (const file of files) {
-    parts.push(
-      `### ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})\n`,
-    );
-    if (file.patch) {
-      const patch =
-        file.patch.length > 3000
-          ? file.patch.slice(0, 3000) +
-            "\n... (truncated, read full file in sandbox)"
-          : file.patch;
-      parts.push(`\`\`\`diff\n${patch}\n\`\`\`\n`);
+
+  const fileGroups = groupFilesByDirectory(files);
+  for (const [dir, groupFiles] of fileGroups) {
+    if (fileGroups.size > 1) {
+      parts.push(`### 📁 ${dir}\n`);
+    }
+    for (const file of groupFiles) {
+      const statusIcon = file.status === "added" ? "+" : file.status === "removed" ? "-" : "~";
+      parts.push(
+        `#### ${statusIcon} ${file.filename} (${file.status}, +${file.additions}/-${file.deletions})\n`,
+      );
+      if (file.patch) {
+        const patch =
+          file.patch.length > PATCH_TRUNCATION_LIMIT
+            ? file.patch.slice(0, PATCH_TRUNCATION_LIMIT) +
+              "\n... (truncated, read full file in sandbox)"
+            : file.patch;
+        parts.push(`\`\`\`diff\n${patch}\n\`\`\`\n`);
+      }
     }
   }
 
@@ -237,7 +239,7 @@ export function buildUserMessage(
   }
 
   parts.push(
-    "\nPlease review the changes thoroughly and submit your review using the submit_review tool. The repository is already cloned — just follow the setup commands from the system prompt exactly.",
+    "\nPlease review the changes thoroughly and submit your review using the submit_review tool. The repository is already set up — start by reading AGENTS.md and any files you need context on (batch your read_file calls in parallel).",
   );
 
   return parts.join("\n");

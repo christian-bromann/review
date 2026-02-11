@@ -232,6 +232,66 @@ async function main() {
   step("✅", "Build succeeded!");
 
   // -----------------------------------------------------------------------
+  // 6b. Ensure the build left the git tree clean
+  // -----------------------------------------------------------------------
+  // Some builds mutate package.json files (e.g. version fields, exports maps).
+  // A dirty tree means `git checkout <branch>` will fail later in the review
+  // agent, so we catch it here early.
+
+  step("🔍", "Checking git tree is clean after build...");
+  const dirtyFiles = (
+    await run(
+      sandbox,
+      "Checking for uncommitted changes...",
+      `cd ${MOUNT_PATH} && git status --porcelain`
+    )
+  ).trim();
+
+  if (dirtyFiles) {
+    // Show exactly what changed so the developer can fix the root cause.
+    step("⚠️", "Build left the following dirty files:");
+    for (const line of dirtyFiles.split("\n")) {
+      info(line);
+    }
+
+    await run(
+      sandbox,
+      "Showing diff of dirty files...",
+      `cd ${MOUNT_PATH} && git diff`,
+      { verbose: true }
+    );
+
+    // Reset so the snapshot is usable regardless.
+    step("🧹", "Resetting dirty files to restore clean git state...");
+    await run(
+      sandbox,
+      "Resetting working tree...",
+      `cd ${MOUNT_PATH} && git checkout -- . && git clean -fd`
+    );
+
+    // Verify the reset worked
+    const stillDirty = (
+      await run(
+        sandbox,
+        "Verifying clean state...",
+        `cd ${MOUNT_PATH} && git status --porcelain`
+      )
+    ).trim();
+
+    if (stillDirty) {
+      throw new Error(
+        "Failed to restore clean git state after build. " +
+        "The snapshot would have dirty files that block PR checkouts.\n" +
+        `Still dirty:\n${stillDirty}`
+      );
+    }
+
+    step("✅", "Git tree restored to clean state.");
+  } else {
+    step("✅", "Git tree is clean after build.");
+  }
+
+  // -----------------------------------------------------------------------
   // 7. Run unit tests to verify the environment
   // -----------------------------------------------------------------------
 

@@ -63,6 +63,7 @@ export interface ReviewContext {
   existingReviews: ExistingReview[];
   reviewComments: ReviewThreadComment[];
   hasChangeset: boolean;
+  depsInstalled: boolean;
 }
 
 export interface LinkedIssue {

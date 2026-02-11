@@ -93,7 +93,7 @@ export async function runReview(
     ],
     interruptOn: { submit_review: true },
     checkpointer,
-    systemPrompt: buildSystemPrompt(pr),
+    systemPrompt: buildSystemPrompt(pr, { depsInstalled: context.depsInstalled }),
   });
 
   const userMessage = buildUserMessage(pr, files, linkedIssues, context);

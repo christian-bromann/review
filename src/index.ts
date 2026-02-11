@@ -21,7 +21,7 @@ import {
   fetchExistingReviews,
   fetchReviewComments,
 } from "./github.ts";
-import { createSandbox } from "./sandbox.ts";
+import { createSandbox, setupSandbox } from "./sandbox.ts";
 import { runReview } from "./agent.ts";
 
 async function main() {
@@ -136,10 +136,12 @@ async function main() {
     `  the PR branch, and review the code. You'll approve before anything is posted.${c.reset}\n`
   );
 
-  // Create sandbox
+  // Create sandbox and pre-run setup commands
   const { sandbox, close } = await createSandbox();
 
   try {
+    const { depsInstalled } = await setupSandbox(sandbox, pr);
+
     // Run the review agent with HITL
     header("AGENT EXECUTION");
     const review = await runReview(
@@ -149,7 +151,7 @@ async function main() {
       linkedIssues,
       args.owner,
       args.repo,
-      { checkRuns, existingReviews, reviewComments, hasChangeset }
+      { checkRuns, existingReviews, reviewComments, hasChangeset, depsInstalled }
     );
 
     header("DONE");
