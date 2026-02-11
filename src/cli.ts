@@ -1,4 +1,4 @@
-import { c } from "./display.ts";
+import pc from "picocolors";
 import type { CliArgs } from "./types.ts";
 
 export function parseArgs(): CliArgs {
@@ -6,19 +6,19 @@ export function parseArgs(): CliArgs {
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     console.log(`
-${c.bold}review${c.reset} — AI-powered PR reviewer with sandboxed code analysis
+${pc.bold("review")} — AI-powered PR reviewer with sandboxed code analysis
 
-${c.bold}Usage:${c.reset}
+${pc.bold("Usage:")}
   npx review <owner/repo#number>
   npx review <github-pr-url>
   npx review <owner/repo#number> --branch <branch>
 
-${c.bold}Examples:${c.reset}
+${pc.bold("Examples:")}
   npx review langchain-ai/langchainjs#7898
   npx review https://github.com/langchain-ai/langchainjs/pull/7898
   npx review langchain-ai/langchainjs#7898 --branch fix/parser
 
-${c.bold}Environment variables:${c.reset}
+${pc.bold("Environment variables:")}
   ANTHROPIC_API_KEY                Required. LLM provider key.
   GITHUB_TOKEN                     Required. For fetching PR data and posting reviews.
   DENO_DEPLOY_TOKEN                Required for Deno sandbox.
@@ -40,7 +40,7 @@ ${c.bold}Environment variables:${c.reset}
 
   if (!match) {
     console.error(
-      `${c.red}Error: Could not parse PR reference.${c.reset}\n` +
+      `${pc.red("Error: Could not parse PR reference.")}\n` +
         `Expected: owner/repo#number or https://github.com/owner/repo/pull/number`
     );
     process.exit(1);

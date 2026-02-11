@@ -4,12 +4,14 @@
     "update-volume": "deno run -A --env-file scripts/update-volume.ts"
   },
   "imports": {
+    "@clack/prompts": "npm:@clack/prompts@^1.0.0",
+    "picocolors": "npm:picocolors@^1.1.1",
     "@deno/sandbox": "npm:@deno/sandbox@^0.11.0",
-    "@langchain/anthropic": "npm:@langchain/anthropic@1.3.16",
-    "@langchain/core": "npm:@langchain/core@1.1.20",
+    "@langchain/anthropic": "npm:@langchain/anthropic@1.3.17",
+    "@langchain/core": "npm:@langchain/core@^1.1.20",
     "@langchain/deno": "npm:@langchain/deno@0.2.0",
     "@langchain/langgraph": "npm:@langchain/langgraph@1.1.4",
-    "deepagents": "npm:deepagents@1.7.4",
+    "deepagents": "npm:deepagents@1.7.5",
     "zod": "npm:zod@4.3.6"
   },
   "nodeModulesDir": "auto"

@@ -5,9 +5,12 @@ import { tool } from "@langchain/core/tools";
 import { AIMessage } from "@langchain/core/messages";
 import { z } from "zod";
 
+import { log, spinner } from "@clack/prompts";
+import pc from "picocolors";
+
 import type { PRData, PRFile, Review, ReviewContext, LinkedIssue } from "./types.ts";
 import { postReviewToGitHub } from "./github.ts";
-import { c, step, prompt, displayReview } from "./display.ts";
+import { displayReview, confirmAction } from "./display.ts";
 import { buildSystemPrompt, buildUserMessage } from "./message.ts";
 
 export async function runReview(
@@ -102,7 +105,7 @@ export async function runReview(
   // Phase 1: Stream agent work until HITL interrupt on submit_review
   // -----------------------------------------------------------------------
 
-  step("🤖", "Agent is reviewing the PR inside the sandbox...\n");
+  log.info("Agent is reviewing the PR inside the sandbox...");
 
   let pendingReview: Review | null = null;
 
@@ -132,8 +135,8 @@ export async function runReview(
           for (const tc of msg.tool_calls) {
             if (tc.name === "submit_review") {
               pendingReview = tc.args as Review;
-              console.log(
-                `\n${c.yellow}  📝 submit_review${c.reset}${c.dim} (interrupted — waiting for your approval)${c.reset}`
+              log.warn(
+                `${pc.yellow("📝 submit_review")} ${pc.dim("— interrupted, waiting for your approval")}`
               );
             } else {
               // Skip noisy internal tools from the display
@@ -145,8 +148,8 @@ export async function runReview(
                   : JSON.stringify(tc.args);
               const display =
                 args.length > 150 ? args.slice(0, 150) + "…" : args;
-              console.log(
-                `${c.yellow}  🔧 ${tc.name}${c.reset}${c.dim}(${display})${c.reset}`
+              log.message(
+                `${pc.yellow(`🔧 ${tc.name}`)}${pc.dim(`(${display})`)}`
               );
             }
           }
@@ -165,9 +168,9 @@ export async function runReview(
           const preview =
             lines.length > 6
               ? lines.slice(0, 6).join("\n") +
-                `\n   ... (${lines.length - 6} more lines)`
+                `\n... (${lines.length - 6} more lines)`
               : content;
-          console.log(`${c.dim}  ↳ ${preview}${c.reset}`);
+          log.message(pc.dim(`↳ ${preview}`));
         }
 
         if (
@@ -178,7 +181,7 @@ export async function runReview(
         ) {
           const lines = msg.content.split("\n").slice(0, 3);
           for (const line of lines) {
-            console.log(`${c.blue}  💬 ${line}${c.reset}`);
+            log.message(pc.blue(`💬 ${line}`));
           }
         }
       }
@@ -190,18 +193,17 @@ export async function runReview(
   // -----------------------------------------------------------------------
 
   if (!pendingReview) {
-    step("⚠️", "Agent finished without submitting a review.");
+    log.warn("Agent finished without submitting a review.");
     return null;
   }
 
   displayReview(pendingReview);
 
-  const answer = await prompt(
-    `${c.bold}  Post this review to GitHub? ${c.reset}${c.dim}(y)es / (n)o: ${c.reset}`
-  );
+  const approved = await confirmAction("Post this review to GitHub?");
 
-  if (answer === "y" || answer === "yes") {
-    step("📤", "Posting review to GitHub...");
+  if (approved) {
+    const postSpinner = spinner({ indicator: "timer" });
+    postSpinner.start("Posting review to GitHub...");
 
     // Post directly — we already have the review data from the interrupted
     // tool call. This is more reliable than resuming the agent which can
@@ -214,19 +216,17 @@ export async function runReview(
         pr.head.sha,
         pendingReview
       );
-      console.log(
-        `${c.green}  ✓ Review posted successfully! View at: ${result.html_url}${c.reset}`
-      );
+      postSpinner.stop("Review posted successfully!");
+      log.info(pc.cyan(result.html_url));
     } catch (err) {
-      console.error(
-        `${c.red}  ✗ Failed to post review: ${err instanceof Error ? err.message : String(err)}${c.reset}`
-      );
+      postSpinner.error("Failed to post review");
+      log.error(err instanceof Error ? err.message : String(err));
       return null;
     }
 
     return pendingReview;
   } else {
-    step("🚫", "Review cancelled. Nothing was posted to GitHub.");
+    log.info("Review cancelled. Nothing was posted to GitHub.");
     return null;
   }
 }

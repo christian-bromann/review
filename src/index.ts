@@ -10,9 +10,12 @@
  *   npx review https://github.com/langchain-ai/langchainjs/pull/7898
  *   npx review langchain-ai/langchainjs#7898 --branch fix/parser
  */
+// deno-lint-ignore-file no-process-global
+
+import { intro, outro, spinner, log, note, cancel } from "@clack/prompts";
+import pc from "picocolors";
 
 import { parseArgs } from "./cli.ts";
-import { c, header, step, info } from "./display.ts";
 import {
   fetchPR,
   fetchPRFiles,
@@ -27,62 +30,73 @@ import { runReview } from "./agent.ts";
 async function main() {
   const args = parseArgs();
 
-  header("review — AI-powered PR reviewer");
+  intro("review — AI-powered PR reviewer");
 
-  // Validate required env vars
+  /**
+   * Validate required env vars
+   */
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.error(
-      `${c.red}Error: ANTHROPIC_API_KEY is required.${c.reset}`
-    );
+    log.error("ANTHROPIC_API_KEY is required.");
+    cancel("Missing environment variable");
     process.exit(1);
   }
 
   if (!process.env.GITHUB_TOKEN) {
-    console.error(
-      `${c.red}Error: GITHUB_TOKEN is required (for fetching PR data and posting reviews).${c.reset}`
-    );
+    log.error("GITHUB_TOKEN is required (for fetching PR data and posting reviews).");
+    cancel("Missing environment variable");
     process.exit(1);
   }
 
-  // Fetch PR details
-  step(
-    "🌐",
-    `Fetching PR #${args.prNumber} from ${args.owner}/${args.repo}...`
-  );
+  /**
+   * Fetch PR details
+   */
+  const prSpinner = spinner({ indicator: "timer" });
+  prSpinner.start(`Fetching PR #${args.prNumber} from ${args.owner}/${args.repo}...`);
   const pr = await fetchPR(args.owner, args.repo, args.prNumber);
-  info(`Title: ${pr.title}`);
-  info(`Author: @${pr.user.login}`);
-  info(`Branch: ${pr.head.ref} → ${pr.base.ref}`);
-  info(
-    `Changes: ${pr.changed_files} files, +${pr.additions} / -${pr.deletions}`
+  prSpinner.stop(`Fetched PR #${args.prNumber}`);
+
+  log.info(
+    [
+      `Title:   ${pc.bold(pr.title)}`,
+      `Author:  ${pc.cyan(`@${pr.user.login}`)}`,
+      `Branch:  ${pc.dim(`${pr.head.ref} → ${pr.base.ref}`)}`,
+      `Changes: ${pr.changed_files} files, ${pc.green(`+${pr.additions}`)} / ${pc.red(`-${pr.deletions}`)}`,
+      ...(args.branch ? [`Override: ${pc.yellow(args.branch)}`] : []),
+    ].join("\n")
   );
 
-  if (args.branch) {
-    info(`Branch override: ${args.branch}`);
-  }
-
-  // Fetch changed files
-  step("📄", "Fetching changed files...");
+  /**
+   * Fetch changed files
+   */
+  const filesSpinner = spinner({ indicator: "timer" });
+  filesSpinner.start("Fetching changed files...");
   const files = await fetchPRFiles(args.owner, args.repo, args.prNumber);
-  for (const f of files) {
-    info(
-      `  ${f.status === "added" ? "+" : f.status === "removed" ? "-" : "~"} ${f.filename}`
-    );
-  }
+  filesSpinner.stop(`${files.length} changed file(s)`);
 
-  // Fetch linked issues
+  const fileLines = files.map((f) => {
+    const icon = f.status === "added" ? pc.green("+") : f.status === "removed" ? pc.red("-") : pc.yellow("~");
+    return `${icon} ${pc.dim(f.filename)}`;
+  });
+  log.message(fileLines.join("\n"));
+
+  /**
+   * Fetch linked issues
+   */
   const linkedIssues = pr.body
     ? await fetchLinkedIssues(args.owner, args.repo, pr.body)
     : [];
   if (linkedIssues.length > 0) {
-    step("🔗", `Found ${linkedIssues.length} linked issue(s)`);
+    log.step(`Found ${linkedIssues.length} linked issue(s)`);
     for (const issue of linkedIssues) {
-      info(`  #${issue.number}: ${issue.title}`);
+      log.info(pc.dim(`#${issue.number}: ${issue.title}`));
     }
   }
 
-  // Fetch CI check runs
-  step("🔍", "Fetching CI status...");
+  /**
+   * Fetch CI check runs
+   */
+  const ciSpinner = spinner({ indicator: "timer" });
+  ciSpinner.start("Fetching CI status...");
   const checkRuns = await fetchCheckRuns(
     args.owner,
     args.repo,
@@ -92,15 +106,19 @@ async function main() {
     (cr) => cr.conclusion === "failure" || cr.conclusion === "cancelled"
   );
   if (checkRuns.length > 0) {
-    info(
-      `${checkRuns.length} check(s): ${checkRuns.filter((cr) => cr.conclusion === "success").length} passing, ${failing.length} failing`
+    const passing = checkRuns.filter((cr) => cr.conclusion === "success").length;
+    ciSpinner.stop(
+      `${checkRuns.length} check(s): ${pc.green(`${passing} passing`)}, ${failing.length > 0 ? pc.red(`${failing.length} failing`) : pc.dim("0 failing")}`
     );
   } else {
-    info("No CI checks found");
+    ciSpinner.stop("No CI checks found");
   }
 
-  // Fetch existing reviews & comments
-  step("💬", "Fetching existing reviews...");
+  /**
+   * Fetch existing reviews & comments
+   */
+  const reviewSpinner = spinner({ indicator: "timer" });
+  reviewSpinner.start("Fetching existing reviews...");
   const existingReviews = await fetchExistingReviews(
     args.owner,
     args.repo,
@@ -111,39 +129,51 @@ async function main() {
     args.repo,
     args.prNumber
   );
+
   if (existingReviews.length > 0) {
-    info(`${existingReviews.length} existing review(s) found`);
-    for (const r of existingReviews) {
-      info(`  @${r.user}: ${r.state}`);
-    }
-  }
-  if (reviewComments.length > 0) {
-    info(`${reviewComments.length} inline comment(s)`);
+    reviewSpinner.stop(`${existingReviews.length} existing review(s) found`);
+    const reviewLines = existingReviews.map((r) => {
+      const stateColor = r.state === "APPROVED" ? pc.green : r.state === "CHANGES_REQUESTED" ? pc.red : pc.dim;
+      return `${pc.cyan(`@${r.user}`)} ${stateColor(r.state)}`;
+    });
+    log.message(pc.dim(reviewLines.join("\n")));
+  } else {
+    reviewSpinner.stop("No existing reviews");
   }
 
-  // Check for changeset
+  if (reviewComments.length > 0) {
+    log.info(pc.dim(`${reviewComments.length} inline comment(s)`));
+  }
+
+  /**
+   * Check for changeset
+   */
   const hasChangeset = files.some((f) =>
     f.filename.startsWith(".changeset/") && f.status === "added"
   );
   if (!hasChangeset) {
-    info("⚠️  No changeset file detected in this PR");
+    log.warn("No changeset file detected in this PR");
   }
 
-  console.log(
-    `\n${c.dim}  The agent will use the pre-cloned repo in the sandbox, check out`
-  );
-  console.log(
-    `  the PR branch, and review the code. You'll approve before anything is posted.${c.reset}\n`
+  note(
+    "The agent will use the pre-cloned repo in the sandbox,\n" +
+    "check out the PR branch, and review the code.\n" +
+    "You'll approve before anything is posted.",
+    "What happens next"
   );
 
-  // Create sandbox and pre-run setup commands
+  /**
+   * Create sandbox and pre-run setup commands
+   */
   const { sandbox, close } = await createSandbox();
 
   try {
     const { depsInstalled } = await setupSandbox(sandbox, pr);
 
-    // Run the review agent with HITL
-    header("AGENT EXECUTION");
+    /**
+     * Run the review agent with HITL
+     */
+    log.step("Agent Execution");
     const review = await runReview(
       sandbox,
       pr,
@@ -154,21 +184,24 @@ async function main() {
       { checkRuns, existingReviews, reviewComments, hasChangeset, depsInstalled }
     );
 
-    header("DONE");
     if (review) {
-      step("✅", `Review posted for: ${pr.title}`);
-      step("🔗", pr.html_url);
+      log.success(`Review posted for: ${pc.bold(pr.title)}`);
+      log.info(pc.cyan(pr.html_url));
     } else {
-      step("ℹ️", "No review was posted.");
+      log.info("No review was posted.");
     }
   } finally {
-    step("🧹", "Closing sandbox...");
+    const closeSpinner = spinner({ indicator: "timer" });
+    closeSpinner.start("Closing sandbox...");
     await close();
-    info("Sandbox destroyed.\n");
+    closeSpinner.stop("Sandbox destroyed");
   }
+
+  outro("Done!");
 }
 
 main().catch((err) => {
-  console.error(`${c.red}Fatal error:${c.reset}`, err);
+  cancel("Fatal error");
+  log.error(String(err));
   process.exit(1);
 });

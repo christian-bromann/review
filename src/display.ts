@@ -1,80 +1,72 @@
-import { createInterface } from "node:readline";
+/**
+ * display — App-specific display helpers built on @clack/prompts.
+ *
+ * All consumers should import clack primitives (`log`, `spinner`, `intro`, …)
+ * directly from "@clack/prompts".  This module only provides app-specific
+ * helpers that don't belong in individual feature files.
+ */
+
+import { log, box, confirm, isCancel, cancel } from "@clack/prompts";
+import pc from "picocolors";
 import type { Review } from "./types.ts";
 
-/** ANSI color helpers for pretty terminal output */
-export const c = {
-  reset: "\x1b[0m",
-  bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  red: "\x1b[31m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  blue: "\x1b[34m",
-  magenta: "\x1b[35m",
-  cyan: "\x1b[36m",
-  white: "\x1b[37m",
-  bgRed: "\x1b[41m",
-  bgGreen: "\x1b[42m",
-  bgYellow: "\x1b[43m",
-};
-
-export function header(text: string) {
-  const line = "─".repeat(60);
-  console.log(`\n${c.cyan}${line}${c.reset}`);
-  console.log(`${c.bold}${c.cyan}  ${text}${c.reset}`);
-  console.log(`${c.cyan}${line}${c.reset}\n`);
-}
-
-export function step(emoji: string, text: string) {
-  console.log(`${c.bold}${emoji}  ${text}${c.reset}`);
-}
-
-export function info(text: string) {
-  console.log(`${c.dim}   ${text}${c.reset}`);
-}
-
-export async function prompt(question: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase());
-    });
-  });
-}
-
+/**
+ * Pretty-print a proposed PR review using clack box + log primitives.
+ */
 export function displayReview(review: Review) {
-  header("PROPOSED REVIEW");
-
-  const verdictColors: Record<string, string> = {
-    approve: `${c.bgGreen}${c.white}${c.bold} APPROVE ${c.reset}`,
-    comment: `${c.bgYellow}${c.white}${c.bold} COMMENT ${c.reset}`,
-    request_changes: `${c.bgRed}${c.white}${c.bold} REQUEST CHANGES ${c.reset}`,
+  const verdictLabels: Record<string, string> = {
+    approve: pc.green(pc.bold("APPROVE")),
+    comment: pc.yellow(pc.bold("COMMENT")),
+    request_changes: pc.red(pc.bold("REQUEST CHANGES")),
   };
-  console.log(`  Verdict: ${verdictColors[review.verdict] ?? review.verdict}`);
-  console.log();
 
-  console.log(`${c.bold}  Summary:${c.reset}`);
-  for (const line of review.summary.split("\n")) {
-    console.log(`${c.dim}  ${line}${c.reset}`);
-  }
-  console.log();
+  const verdictIcons: Record<string, string> = {
+    approve: "✅",
+    comment: "💬",
+    request_changes: "❌",
+  };
 
+  const icon = verdictIcons[review.verdict] ?? "";
+  const label = verdictLabels[review.verdict] ?? review.verdict;
+
+  // Build box content: verdict + summary
+  const content = [
+    `${icon}  Verdict: ${label}`,
+    "",
+    ...review.summary.split("\n").map((l) => pc.dim(l)),
+  ].join("\n");
+
+  box(content, "Proposed Review", {
+    titleAlign: "center",
+    contentAlign: "left",
+    rounded: true,
+  });
+
+  // Line comments
   if (review.comments.length > 0) {
-    console.log(
-      `${c.bold}  Line comments (${review.comments.length}):${c.reset}\n`
-    );
+    log.step(`Line comments (${review.comments.length})`);
     for (let i = 0; i < review.comments.length; i++) {
       const comment = review.comments[i]!;
-      console.log(
-        `  ${c.cyan}${i + 1}.${c.reset} ${c.bold}${comment.path}${c.reset}${c.dim}:${comment.line}${c.reset}`
+      log.info(
+        `${pc.cyan(`${i + 1}.`)} ${pc.bold(comment.path)}${pc.dim(`:${comment.line}`)}`
       );
-      for (const line of comment.body.split("\n")) {
-        console.log(`     ${c.dim}${line}${c.reset}`);
-      }
-      console.log();
+      log.message(pc.dim(comment.body));
     }
   } else {
-    console.log(`${c.dim}  No line-specific comments.${c.reset}\n`);
+    log.info(pc.dim("No line-specific comments."));
   }
+}
+
+/**
+ * Ask the user a yes/no question using clack's styled confirm prompt.
+ * Handles Ctrl+C gracefully with `cancel()`.
+ */
+export async function confirmAction(message: string): Promise<boolean> {
+  const result = await confirm({ message });
+  if (isCancel(result)) {
+    cancel("Operation cancelled.");
+    // deno-lint-ignore no-process-global
+    process.exit(0);
+  }
+  return result;
 }

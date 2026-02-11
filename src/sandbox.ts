@@ -1,18 +1,33 @@
 import { Client } from "@deno/sandbox";
 import { DenoSandbox } from "@langchain/deno";
+import { spinner, log } from "@clack/prompts";
 import type { PRData } from "./types.ts";
-import { step, info } from "./display.ts";
 
 /** Snapshot slug — must match scripts/update-volume.ts */
 export const SNAPSHOT_SLUG = "langchainjs-dev-snapshot";
 /** Path where the repo lives inside the snapshot's root filesystem */
 export const VOLUME_MOUNT = "/data/repo";
-/** pnpm store path inside the snapshot */
-export const PNPM_STORE = `${VOLUME_MOUNT}/.pnpm-store`;
+/** pnpm store path — lives on the volume but outside the repo so it doesn't
+ *  interfere with git status / git clean inside /data/repo. */
+export const PNPM_STORE = "/data/pnpm-store";
 const VOLUME_REGION = "ord" as const;
 
+/**
+ * Workspace packages excluded from dependency installation.
+ * These are heavy / rarely-needed packages (e.g. @langchain/community pulls in
+ * TensorFlow). Must stay in sync with scripts/update-volume.ts so the snapshot
+ * store matches what setupSandbox installs.
+ */
+export const INSTALL_EXCLUDE_FILTERS = [
+  "!@langchain/community",
+  "!create-langchain-integration",
+  "!examples",
+  "!@langchain/classic",
+];
+
 export async function createSandbox() {
-  step("📦", "Creating writable volume from snapshot...");
+  const s = spinner({ indicator: "timer" });
+  s.start("Creating writable volume from snapshot...");
 
   // Fork the read-only snapshot into a writable temporary volume.
   // Volumes created from snapshots are copy-on-write, so this is fast and
@@ -25,10 +40,10 @@ export async function createSandbox() {
     capacity: "10GB",
     from: SNAPSHOT_SLUG,
   });
-  info(`Writable volume created: ${volume.slug}`);
+
+  s.message("Booting sandbox from writable volume...");
 
   // Boot the sandbox from the writable volume (not the snapshot).
-  step("📦", "Booting sandbox from writable volume...");
   const sandbox = await DenoSandbox.create({
     region: VOLUME_REGION,
     memory: "4GiB",
@@ -36,8 +51,7 @@ export async function createSandbox() {
     root: volume.slug,
   });
 
-  info(`Sandbox created (id: ${sandbox.id})`);
-  info("Sandbox ready (Deno — isolated cloud microVM with writable root)");
+  s.stop(`Sandbox ready (id: ${sandbox.id})`);
 
   return {
     sandbox,
@@ -46,10 +60,10 @@ export async function createSandbox() {
       // Clean up the temporary volume after the sandbox is destroyed
       try {
         await client.volumes.delete(volumeSlug);
-        info(`Temporary volume "${volumeSlug}" deleted`);
+        log.info(`Temporary volume "${volumeSlug}" deleted`);
       } catch {
         // Best-effort cleanup — don't fail the whole run
-        info(`⚠️  Could not delete temporary volume "${volumeSlug}"`);
+        log.warn(`Could not delete temporary volume "${volumeSlug}"`);
       }
     },
   };
@@ -71,45 +85,64 @@ export async function setupSandbox(
   const headRemote = isFork ? "pr-fork" : "origin";
   const headCloneUrl = pr.head.repo.clone_url;
 
-  step("⚙️", "Setting up sandbox (git checkout + dependency install)...");
+  const s = spinner({ indicator: "timer" });
+  s.start("Setting up sandbox (git checkout + dependency install)...");
 
-  // Step 1: Add fork remote if needed
+  /**
+   * Step 1: Add fork remote if needed
+   */
   if (isFork) {
+    s.message(`Adding fork remote: ${headRemote} → ${headCloneUrl}`);
     const addRemote = await sandbox.execute(
       `cd ${repoDir} && (git remote add ${headRemote} ${headCloneUrl} 2>/dev/null || git remote set-url ${headRemote} ${headCloneUrl})`
     );
     if (addRemote.exitCode !== 0) {
+      s.error("Failed to add fork remote");
       throw new Error(`Failed to add fork remote: ${addRemote.output}`);
     }
-    info(`Added fork remote: ${headRemote} → ${headCloneUrl}`);
   }
 
-  // Step 2: Fetch head and base branches in parallel using shell background jobs
-  // Use ; (not &&) to separate backgrounded commands — `cmd & && next` is a syntax error
+  /**
+   * Step 2: Fetch head and base branches in parallel using shell background jobs
+   */
+  s.message(`Fetching branches: ${pr.head.ref}, ${pr.base.ref}`);
   const fetchCmd = `cd ${repoDir} && git fetch ${headRemote} ${pr.head.ref}:refs/remotes/${headRemote}/${pr.head.ref} --depth 200 & git fetch origin ${pr.base.ref}:refs/remotes/origin/${pr.base.ref} --depth 200 & wait`;
   const fetchResult = await sandbox.execute(fetchCmd);
   if (fetchResult.exitCode !== 0) {
+    s.error("Failed to fetch branches");
     throw new Error(`Failed to fetch branches: ${fetchResult.output}`);
   }
-  info(`Fetched branches: ${pr.head.ref}, ${pr.base.ref}`);
 
-  // Step 3: Checkout the PR branch
+  /**
+   * Step 3: Checkout the PR branch
+   */
+  s.message(`Checking out branch: ${pr.head.ref}`);
   const checkoutResult = await sandbox.execute(
     `cd ${repoDir} && git checkout -B ${pr.head.ref} ${headRemote}/${pr.head.ref}`
   );
   if (checkoutResult.exitCode !== 0) {
+    s.error("Failed to checkout PR branch");
     throw new Error(`Failed to checkout PR branch: ${checkoutResult.output}`);
   }
-  info(`Checked out branch: ${pr.head.ref}`);
 
-  // Step 4: Install dependencies
+  /**
+   * Step 4: Install dependencies
+   * Use the same workspace filters as update-volume.ts so we only install
+   * packages whose dependencies are already cached in the snapshot's pnpm store.
+   * This avoids downloading heavy transitive deps (e.g. TensorFlow from
+   * @langchain/community) that would OOM the sandbox.
+   */
+  s.message("Installing dependencies...");
+  const filterArgs = INSTALL_EXCLUDE_FILTERS.map((f) => `--filter ${f}`).join(" ");
   const installResult = await sandbox.execute(
-    `cd ${repoDir} && pnpm install --store-dir ${PNPM_STORE}`
+    `cd ${repoDir} && NODE_OPTIONS="--max-old-space-size=2560" pnpm install --store-dir ${PNPM_STORE} --prefer-offline ${filterArgs}`
   );
   if (installResult.exitCode !== 0) {
-    info("⚠️  Dependency install failed (agent can retry if needed for tests)");
+    s.stop("Sandbox ready — dependencies failed (agent can retry)");
+    log.warn("Dependency install failed (agent can retry if needed for tests)");
     return { depsInstalled: false };
   }
-  info("Dependencies installed");
+
+  s.stop("Sandbox ready — dependencies installed");
   return { depsInstalled: true };
 }

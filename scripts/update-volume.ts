@@ -15,6 +15,9 @@
  */
 
 import { Client, Sandbox } from "@deno/sandbox";
+import { intro, outro, spinner, log, box, taskLog, cancel } from "@clack/prompts";
+import pc from "picocolors";
+import { INSTALL_EXCLUDE_FILTERS } from "../src/sandbox.ts";
 
 const VOLUME_SLUG = "langchainjs-dev";
 const SNAPSHOT_SLUG = "langchainjs-dev-snapshot";
@@ -23,27 +26,20 @@ const VOLUME_CAPACITY = "10GB";
 const REPO_URL = "https://github.com/langchain-ai/langchainjs.git";
 const MOUNT_PATH = "/data/repo";
 
-// ANSI helpers
-const c = {
-  reset: "\x1b[0m",
-  bold: "\x1b[1m",
-  dim: "\x1b[2m",
-  green: "\x1b[32m",
-  yellow: "\x1b[33m",
-  cyan: "\x1b[36m",
-  red: "\x1b[31m",
-};
+/**
+ * Run a shell command inside the sandbox, using a timer spinner to show
+ * elapsed time while the command executes.
+ * Returns stdout on success; throws on failure.
+ */
+async function run(
+  sandbox: Sandbox,
+  description: string,
+  command: string,
+  { verbose = false } = {}
+): Promise<string> {
+  const s = spinner({ indicator: "timer" });
+  s.start(description);
 
-function step(emoji: string, text: string) {
-  console.log(`${c.bold}${emoji}  ${text}${c.reset}`);
-}
-
-function info(text: string) {
-  console.log(`${c.dim}   ${text}${c.reset}`);
-}
-
-async function run(sandbox: Sandbox, description: string, command: string, { verbose = false } = {}) {
-  step("⚙️", description);
   // SDK stdout piping is unreliable — redirect to files and read back.
   await sandbox.fs.writeTextFile("/tmp/_cmd.sh", command);
   const { status } = await sandbox.sh`bash /tmp/_cmd.sh >/tmp/_out 2>/tmp/_err`.noThrow();
@@ -51,76 +47,82 @@ async function run(sandbox: Sandbox, description: string, command: string, { ver
   const stderr = await sandbox.fs.readTextFile("/tmp/_err").catch(() => "");
 
   const stdoutLines = stdout.trimEnd().split("\n");
-  if (stdout.trim()) {
-    if (verbose) {
-      // Print everything
-      for (const line of stdoutLines) {
-        info(line);
-      }
-    } else if (status.success) {
-      // On success, show first 20 lines
-      for (const line of stdoutLines.slice(0, 20)) {
-        info(line);
-      }
-      if (stdoutLines.length > 20) {
-        info(`... (${stdoutLines.length - 20} more lines)`);
-      }
-    } else {
-      // On failure, show first 10 + last 30 lines to capture the error
-      for (const line of stdoutLines.slice(0, 10)) {
-        info(line);
-      }
-      if (stdoutLines.length > 40) {
-        info(`... (${stdoutLines.length - 40} more lines)`);
-      }
-      if (stdoutLines.length > 10) {
-        for (const line of stdoutLines.slice(-30)) {
-          info(line);
-        }
-      }
-    }
-  }
+
   if (!status.success) {
-    console.error(`${c.red}   Command failed (exit ${status.code})${c.reset}`);
+    s.error(`${description} — failed (exit ${status.code})`);
+
+    // Show truncated stdout (first 10 + last 30 lines) in dim gray
+    if (stdout.trim()) {
+      const head = stdoutLines.slice(0, 10);
+      const tail = stdoutLines.length > 10 ? stdoutLines.slice(-30) : [];
+      const skipped = stdoutLines.length - head.length - tail.length;
+      const lines = [
+        ...head,
+        ...(skipped > 0 ? [`... (${skipped} more lines)`] : []),
+        ...tail,
+      ];
+      log.message(pc.dim(lines.join("\n")));
+    }
+
     if (stderr.trim()) {
       const stderrLines = stderr.trimEnd().split("\n");
       const lines = verbose ? stderrLines : stderrLines.slice(-30);
-      for (const line of lines) {
-        console.error(`${c.red}   ${line}${c.reset}`);
-      }
+      log.error(lines.join("\n"));
     }
+
     throw new Error(`Command failed: ${description}`);
   }
+
+  // Success
+  s.stop(description);
+
+  if (stdout.trim()) {
+    if (verbose) {
+      log.message(pc.dim(stdoutLines.join("\n")));
+    } else {
+      const head = stdoutLines.slice(0, 20);
+      const remaining = stdoutLines.length - head.length;
+      const lines = [
+        ...head,
+        ...(remaining > 0 ? [`... (${remaining} more lines)`] : []),
+      ];
+      log.message(pc.dim(lines.join("\n")));
+    }
+  }
+
   return stdout;
 }
 
 async function main() {
+  intro("update-volume");
+
   const client = new Client();
 
   // -----------------------------------------------------------------------
   // 1. Create or retrieve the persistent volume
   // -----------------------------------------------------------------------
 
-  step("📦", "Checking for existing volume...");
+  log.step("Checking for existing volume...");
   let volume = await client.volumes.get(VOLUME_SLUG);
 
   if (volume && !volume.isBootable) {
-    step("⚠️", "Volume exists but is not bootable — deleting and recreating...");
+    log.warn("Volume exists but is not bootable — deleting and recreating...");
     await client.volumes.delete(VOLUME_SLUG);
     volume = null;
   }
 
   if (!volume) {
-    step("📦", `Creating bootable volume "${VOLUME_SLUG}" (${VOLUME_CAPACITY}) in ${VOLUME_REGION}...`);
+    const s = spinner({ indicator: "timer" });
+    s.start(`Creating bootable volume "${VOLUME_SLUG}" (${VOLUME_CAPACITY}) in ${VOLUME_REGION}...`);
     volume = await client.volumes.create({
       slug: VOLUME_SLUG,
       region: VOLUME_REGION,
       capacity: VOLUME_CAPACITY,
       from: "builtin:debian-13",
     });
-    info(`Created bootable volume ${volume.slug} (${volume.capacity} bytes)`);
+    s.stop(`Created bootable volume ${volume.slug} (${volume.capacity} bytes)`);
   } else {
-    info(
+    log.info(
       `Volume "${volume.slug}" exists (bootable) — ` +
       `${volume.estimatedFlattenedSize} / ${volume.capacity} bytes used`
     );
@@ -130,29 +132,33 @@ async function main() {
   // 2. Kill any stale sandboxes that may still hold the volume
   // -----------------------------------------------------------------------
 
-  step("🧹", "Cleaning up stale sandboxes...");
-  let cleaned = 0;
-  const staleSandboxes = await client.sandboxes.list({ labels: { job: "update-volume" } });
-  for (const meta of staleSandboxes) {
-    try {
-      const stale = await Sandbox.connect(meta.id);
-      await stale.kill();
-      cleaned++;
-    } catch {
-      // Already gone — ignore
+  {
+    const tl = taskLog({ title: "Cleaning up stale sandboxes..." });
+    let cleaned = 0;
+    const staleSandboxes = await client.sandboxes.list({ labels: { job: "update-volume" } });
+    for (const meta of staleSandboxes) {
+      try {
+        tl.message(`Killing sandbox ${meta.id}...`);
+        const stale = await Sandbox.connect(meta.id);
+        await stale.kill();
+        cleaned++;
+      } catch {
+        // Already gone — ignore
+      }
     }
-  }
-  if (cleaned > 0) {
-    info(`Killed ${cleaned} stale sandbox(es)`);
-  } else {
-    info("No stale sandboxes found");
+    if (cleaned > 0) {
+      tl.success(`Killed ${cleaned} stale sandbox(es)`);
+    } else {
+      tl.success("No stale sandboxes found");
+    }
   }
 
   // -----------------------------------------------------------------------
   // 3. Spin up a sandbox with the volume mounted
   // -----------------------------------------------------------------------
 
-  step("🚀", "Creating sandbox with bootable volume as root...");
+  const sandboxSpinner = spinner({ indicator: "timer" });
+  sandboxSpinner.start("Creating sandbox with bootable volume as root...");
 
   const sandbox = await Sandbox.create({
     region: VOLUME_REGION as "ord" | "ams",
@@ -162,7 +168,7 @@ async function main() {
     labels: { job: "update-volume" },
   });
 
-  info(`Sandbox ready (id: ${sandbox.id})`);
+  sandboxSpinner.stop(`Sandbox ready (id: ${sandbox.id})`);
 
   // -----------------------------------------------------------------------
   // 4. Clone or update the repository
@@ -172,8 +178,8 @@ async function main() {
   // create directories outside the home folder.
   await run(
     sandbox,
-    "Ensuring repo directory exists with correct permissions...",
-    `sudo mkdir -p ${MOUNT_PATH} && sudo chown "$(whoami):$(id -gn)" ${MOUNT_PATH}`
+    "Ensuring repo and store directories exist with correct permissions...",
+    `sudo mkdir -p ${MOUNT_PATH} /data/pnpm-store && sudo chown "$(whoami):$(id -gn)" ${MOUNT_PATH} /data/pnpm-store`
   );
 
   const repoState = (
@@ -187,7 +193,7 @@ async function main() {
       `git clone --depth 30 ${REPO_URL} ${MOUNT_PATH}`
     );
   } else {
-    step("🔄", "Repository already present — pulling latest changes...");
+    log.info("Repository already present — pulling latest changes...");
     await run(
       sandbox,
       "Fetching latest from origin...",
@@ -205,12 +211,11 @@ async function main() {
     `npm install -g --force pnpm`
   );
 
-  // The pnpm content-addressable store lives alongside the repo so it gets
-  // baked into the snapshot.  Without --store-dir the store may land elsewhere
-  // and only tiny symlinks end up in the repo directory.
-  const PNPM_STORE = `${MOUNT_PATH}/.pnpm-store`;
-  const FILTERS = ['!@langchain/community', '!create-langchain-integration', '!examples', '!@langchain/classic'];
-  const FILTER_STRING = FILTERS.join(' --filter ');
+  // The pnpm content-addressable store lives outside the repo directory so it
+  // doesn't show up as untracked in git status, but still on the same volume
+  // so it gets baked into the snapshot.
+  const PNPM_STORE = "/data/pnpm-store";
+  const FILTER_STRING = INSTALL_EXCLUDE_FILTERS.join(' --filter ');
 
   await run(
     sandbox,
@@ -218,18 +223,25 @@ async function main() {
     `cd ${MOUNT_PATH} && pnpm install --store-dir ${PNPM_STORE} --frozen-lockfile --filter ${FILTER_STRING} --network-concurrency=5 || pnpm install --store-dir ${PNPM_STORE} --filter ${FILTER_STRING} --network-concurrency=5`
   );
 
+  // Verify the pnpm store was actually populated — an empty/missing store
+  // means the snapshot will force a full re-download on every sandbox boot.
+  await run(
+    sandbox,
+    "Verifying pnpm store is populated...",
+    `du -sh ${PNPM_STORE} && echo "Store files:" && ls ${PNPM_STORE}/v3/files 2>/dev/null | head -5 || echo "WARNING: pnpm store appears empty at ${PNPM_STORE}"`
+  );
+
   // -----------------------------------------------------------------------
   // 6. Build the project so TypeScript declarations are available
   // -----------------------------------------------------------------------
 
-  step("🔨", "Building the project...");
   await run(
     sandbox,
     "Building workspace packages...",
     `cd ${MOUNT_PATH} && pnpm --filter ${FILTER_STRING} build`,
     { verbose: true }
   );
-  step("✅", "Build succeeded!");
+  log.success("Build succeeded!");
 
   // -----------------------------------------------------------------------
   // 6b. Ensure the build left the git tree clean
@@ -238,7 +250,7 @@ async function main() {
   // A dirty tree means `git checkout <branch>` will fail later in the review
   // agent, so we catch it here early.
 
-  step("🔍", "Checking git tree is clean after build...");
+  log.step("Checking git tree is clean after build...");
   const dirtyFiles = (
     await run(
       sandbox,
@@ -249,10 +261,8 @@ async function main() {
 
   if (dirtyFiles) {
     // Show exactly what changed so the developer can fix the root cause.
-    step("⚠️", "Build left the following dirty files:");
-    for (const line of dirtyFiles.split("\n")) {
-      info(line);
-    }
+    log.warn("Build left the following dirty files:");
+    log.message(pc.dim(dirtyFiles));
 
     await run(
       sandbox,
@@ -262,7 +272,7 @@ async function main() {
     );
 
     // Reset so the snapshot is usable regardless.
-    step("🧹", "Resetting dirty files to restore clean git state...");
+    log.step("Resetting dirty files to restore clean git state...");
     await run(
       sandbox,
       "Resetting working tree...",
@@ -286,30 +296,30 @@ async function main() {
       );
     }
 
-    step("✅", "Git tree restored to clean state.");
+    log.success("Git tree restored to clean state.");
   } else {
-    step("✅", "Git tree is clean after build.");
+    log.success("Git tree is clean after build.");
   }
 
   // -----------------------------------------------------------------------
   // 7. Run unit tests to verify the environment
   // -----------------------------------------------------------------------
 
-  step("🧪", "Running unit tests to verify the environment...");
+  log.step("Running unit tests to verify the environment...");
   try {
     await run(
       sandbox,
       "Running tests...",
       `cd ${MOUNT_PATH} && pnpm --filter langchain test`
     );
-    step("✅", "All tests passed — environment is ready!");
+    log.success("All tests passed — environment is ready!");
   } catch {
-    step("⚠️", "Some tests failed — but the volume is still usable for reviews.");
-    info("You may want to investigate test failures separately.");
+    log.warn("Some tests failed — but the volume is still usable for reviews.");
+    log.info("You may want to investigate test failures separately.");
   }
 
   // -----------------------------------------------------------------------
-  // 7. Check on-disk usage, shut down, and report volume stats
+  // 8. Check on-disk usage, shut down, and report volume stats
   // -----------------------------------------------------------------------
 
   // `du` inside the sandbox is the source of truth for volume size.
@@ -321,45 +331,114 @@ async function main() {
     `du -sh ${MOUNT_PATH}`
   );
 
-  step("🧹", "Closing sandbox...");
+  const closeSpinner = spinner({ indicator: "timer" });
+  closeSpinner.start("Closing sandbox...");
   await sandbox.kill();
-  info("Sandbox terminated — volume data persisted.");
+  closeSpinner.stop("Sandbox terminated — volume data persisted.");
 
   // Parse the du output (e.g. "3.4G\t/data/repo\n") for the summary line.
   const duSize = duOutput.trim().split(/\s+/)[0] ?? "unknown";
 
-  step(
-    "📊",
+  log.info(
     `Volume usage: ${duSize} on disk ` +
     `(capacity: ${(volume.capacity / 1024 / 1024 / 1024).toFixed(1)} GB)`
   );
 
   // -----------------------------------------------------------------------
-  // 8. Create a snapshot from the volume for concurrent sandbox use
+  // 9. Create a snapshot from the volume for concurrent sandbox use
   // -----------------------------------------------------------------------
 
-  step("📸", "Creating snapshot from volume...");
+  log.step("Creating snapshot from volume...");
 
   // Delete existing snapshot if present (snapshots are immutable — we must
   // recreate to pick up volume changes).
   const existingSnapshot = await client.snapshots.get(SNAPSHOT_SLUG);
   if (existingSnapshot) {
-    info(`Deleting existing snapshot "${SNAPSHOT_SLUG}"...`);
-    await client.snapshots.delete(SNAPSHOT_SLUG);
+    // Before deleting the snapshot, we must remove any volumes that were
+    // forked from it (e.g. review-tmp-* volumes).  The API rejects snapshot
+    // deletion while dependent volumes exist (SNAPSHOT_IN_USE).
+    {
+      const tl = taskLog({ title: "Cleaning up volumes derived from the snapshot..." });
+      const dependentVolumes = await client.volumes.list({ search: "review-tmp" });
+      let deletedVolumes = 0;
+      for await (const vol of dependentVolumes) {
+        try {
+          tl.message(`Deleting volume "${vol.slug}"...`);
+          await client.volumes.delete(vol.slug);
+          deletedVolumes++;
+        } catch {
+          // Best-effort — the volume may already be gone or still in use by a
+          // running sandbox.  We'll still attempt the snapshot delete below and
+          // surface a clear error if it fails.
+          tl.message(`Could not delete volume "${vol.slug}" — skipping`);
+        }
+      }
+      if (deletedVolumes > 0) {
+        tl.success(`Deleted ${deletedVolumes} dependent volume(s)`);
+      } else {
+        tl.success("No dependent volumes found");
+      }
+    }
+
+    // Retry snapshot deletion with back-off.  After dependent volumes are
+    // deleted the backend may need a few seconds to fully release them before
+    // the snapshot can be removed (JOB_IS_DEAD / transient 500 errors).
+    const deleteSpinner = spinner({ indicator: "timer" });
+    deleteSpinner.start(`Deleting existing snapshot "${SNAPSHOT_SLUG}"...`);
+
+    const MAX_RETRIES = 5;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        await client.snapshots.delete(SNAPSHOT_SLUG);
+        deleteSpinner.stop(`Deleted snapshot "${SNAPSHOT_SLUG}"`);
+        break; // success
+      } catch (err: unknown) {
+        const isRetryable =
+          err instanceof Error &&
+          "status" in err &&
+          ((err as { status: number }).status >= 500 ||
+            (err as { code?: string }).code === "SNAPSHOT_IN_USE");
+
+        if (isRetryable && attempt < MAX_RETRIES) {
+          const delaySec = attempt * 5;
+          deleteSpinner.message(
+            `Retry ${attempt}/${MAX_RETRIES} — waiting ${delaySec}s...`
+          );
+          await new Promise((r) => setTimeout(r, delaySec * 1000));
+        } else {
+          deleteSpinner.error("Snapshot deletion failed");
+          throw err;
+        }
+      }
+    }
   }
 
+  const snapshotSpinner = spinner({ indicator: "timer" });
+  snapshotSpinner.start("Creating snapshot from volume...");
   const snapshot = await client.volumes.snapshot(volume.slug, {
     slug: SNAPSHOT_SLUG,
   });
-  info(`Snapshot created: ${snapshot.slug} (${snapshot.flattenedSize} bytes)`);
+  snapshotSpinner.stop(`Snapshot created: ${snapshot.slug} (${snapshot.flattenedSize} bytes)`);
 
-  step("🎉", "Volume + snapshot setup complete! The review agent can now use the snapshot.");
-  info(`Volume slug:   ${VOLUME_SLUG}`);
-  info(`Snapshot slug: ${SNAPSHOT_SLUG}`);
-  info(`Repo path:     ${MOUNT_PATH}`);
+  // -----------------------------------------------------------------------
+  // Done!
+  // -----------------------------------------------------------------------
+
+  box(
+    [
+      `Volume slug:   ${pc.cyan(VOLUME_SLUG)}`,
+      `Snapshot slug: ${pc.cyan(SNAPSHOT_SLUG)}`,
+      `Repo path:     ${pc.cyan(MOUNT_PATH)}`,
+    ].join("\n"),
+    "Setup complete!",
+    { titleAlign: "center", contentAlign: "left", rounded: true }
+  );
+
+  outro("The review agent can now use the snapshot.");
 }
 
 main().catch((err) => {
-  console.error(`${c.red}Fatal error:${c.reset}`, err);
+  cancel("Fatal error");
+  log.error(String(err));
   Deno.exit(1);
 });
