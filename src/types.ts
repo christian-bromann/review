@@ -58,6 +58,19 @@ export interface ReviewThreadComment {
   created_at: string;
 }
 
+export interface ReviewContext {
+  checkRuns: CheckRun[];
+  existingReviews: ExistingReview[];
+  reviewComments: ReviewThreadComment[];
+  hasChangeset: boolean;
+}
+
+export interface LinkedIssue {
+  number: number;
+  title: string;
+  body: string;
+}
+
 export interface CliArgs {
   owner: string;
   repo: string;

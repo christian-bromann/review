@@ -2,19 +2,22 @@
 /**
  * update-volume — Prepares a persistent Deno Sandbox volume with the
  * langchainjs repository cloned, dependencies installed, and unit tests
- * verified.
+ * verified, then creates a snapshot for concurrent sandbox use.
  *
- * Run once (or periodically) to keep the volume up-to-date:
+ * Run once (or periodically) to keep the snapshot up-to-date:
  *
  *   deno task update-volume
  *
- * The review agent then mounts this volume so it only needs to
+ * The review agent boots from the snapshot so it only needs to
  * `git checkout <branch> && pnpm install` — saving minutes per review.
+ * Snapshots are read-only and can be mounted by multiple sandboxes at once,
+ * unlike volumes which have an exclusive lock.
  */
 
 import { Client, Sandbox } from "@deno/sandbox";
 
 const VOLUME_SLUG = "langchainjs-dev";
+const SNAPSHOT_SLUG = "langchainjs-dev-snapshot";
 const VOLUME_REGION = "ord";
 const VOLUME_CAPACITY = "10GB";
 const REPO_URL = "https://github.com/langchain-ai/langchainjs.git";
@@ -39,7 +42,7 @@ function info(text: string) {
   console.log(`${c.dim}   ${text}${c.reset}`);
 }
 
-async function run(sandbox: Sandbox, description: string, command: string) {
+async function run(sandbox: Sandbox, description: string, command: string, { verbose = false } = {}) {
   step("⚙️", description);
   // SDK stdout piping is unreliable — redirect to files and read back.
   await sandbox.fs.writeTextFile("/tmp/_cmd.sh", command);
@@ -47,18 +50,42 @@ async function run(sandbox: Sandbox, description: string, command: string) {
   const stdout = await sandbox.fs.readTextFile("/tmp/_out").catch(() => "");
   const stderr = await sandbox.fs.readTextFile("/tmp/_err").catch(() => "");
 
+  const stdoutLines = stdout.trimEnd().split("\n");
   if (stdout.trim()) {
-    for (const line of stdout.trimEnd().split("\n").slice(0, 20)) {
-      info(line);
-    }
-    if (stdout.split("\n").length > 20) {
-      info(`... (${stdout.split("\n").length - 20} more lines)`);
+    if (verbose) {
+      // Print everything
+      for (const line of stdoutLines) {
+        info(line);
+      }
+    } else if (status.success) {
+      // On success, show first 20 lines
+      for (const line of stdoutLines.slice(0, 20)) {
+        info(line);
+      }
+      if (stdoutLines.length > 20) {
+        info(`... (${stdoutLines.length - 20} more lines)`);
+      }
+    } else {
+      // On failure, show first 10 + last 30 lines to capture the error
+      for (const line of stdoutLines.slice(0, 10)) {
+        info(line);
+      }
+      if (stdoutLines.length > 40) {
+        info(`... (${stdoutLines.length - 40} more lines)`);
+      }
+      if (stdoutLines.length > 10) {
+        for (const line of stdoutLines.slice(-30)) {
+          info(line);
+        }
+      }
     }
   }
   if (!status.success) {
     console.error(`${c.red}   Command failed (exit ${status.code})${c.reset}`);
     if (stderr.trim()) {
-      for (const line of stderr.trimEnd().split("\n").slice(0, 10)) {
+      const stderrLines = stderr.trimEnd().split("\n");
+      const lines = verbose ? stderrLines : stderrLines.slice(-30);
+      for (const line of lines) {
         console.error(`${c.red}   ${line}${c.reset}`);
       }
     }
@@ -77,17 +104,24 @@ async function main() {
   step("📦", "Checking for existing volume...");
   let volume = await client.volumes.get(VOLUME_SLUG);
 
+  if (volume && !volume.isBootable) {
+    step("⚠️", "Volume exists but is not bootable — deleting and recreating...");
+    await client.volumes.delete(VOLUME_SLUG);
+    volume = null;
+  }
+
   if (!volume) {
-    step("📦", `Creating volume "${VOLUME_SLUG}" (${VOLUME_CAPACITY}) in ${VOLUME_REGION}...`);
+    step("📦", `Creating bootable volume "${VOLUME_SLUG}" (${VOLUME_CAPACITY}) in ${VOLUME_REGION}...`);
     volume = await client.volumes.create({
       slug: VOLUME_SLUG,
       region: VOLUME_REGION,
       capacity: VOLUME_CAPACITY,
+      from: "builtin:debian-13",
     });
-    info(`Created volume ${volume.slug} (${volume.capacity} bytes)`);
+    info(`Created bootable volume ${volume.slug} (${volume.capacity} bytes)`);
   } else {
     info(
-      `Volume "${volume.slug}" exists — ` +
+      `Volume "${volume.slug}" exists (bootable) — ` +
       `${volume.estimatedFlattenedSize} / ${volume.capacity} bytes used`
     );
   }
@@ -118,15 +152,13 @@ async function main() {
   // 3. Spin up a sandbox with the volume mounted
   // -----------------------------------------------------------------------
 
-  step("🚀", "Creating sandbox with volume mounted...");
+  step("🚀", "Creating sandbox with bootable volume as root...");
 
   const sandbox = await Sandbox.create({
     region: VOLUME_REGION as "ord" | "ams",
     memory: "4GiB",
     timeout: "15m",
-    volumes: {
-      [MOUNT_PATH]: volume.slug,
-    },
+    root: volume.slug,
     labels: { job: "update-volume" },
   });
 
@@ -135,6 +167,14 @@ async function main() {
   // -----------------------------------------------------------------------
   // 4. Clone or update the repository
   // -----------------------------------------------------------------------
+
+  // The bootable Debian image runs as a non-root user, so we need sudo to
+  // create directories outside the home folder.
+  await run(
+    sandbox,
+    "Ensuring repo directory exists with correct permissions...",
+    `sudo mkdir -p ${MOUNT_PATH} && sudo chown "$(whoami):$(id -gn)" ${MOUNT_PATH}`
+  );
 
   const repoState = (
     await run(sandbox, "Checking repo state...", `test -d ${MOUNT_PATH}/.git && echo exists || echo fresh`)
@@ -165,20 +205,34 @@ async function main() {
     `npm install -g --force pnpm`
   );
 
-  // The pnpm content-addressable store MUST live on the volume so installed
-  // packages persist after the sandbox is destroyed.  Without --store-dir the
-  // store lands on the ephemeral root FS and only tiny symlinks end up on the
-  // volume (~9 MB instead of hundreds of MB).
+  // The pnpm content-addressable store lives alongside the repo so it gets
+  // baked into the snapshot.  Without --store-dir the store may land elsewhere
+  // and only tiny symlinks end up in the repo directory.
   const PNPM_STORE = `${MOUNT_PATH}/.pnpm-store`;
+  const FILTERS = ['!@langchain/community', '!create-langchain-integration', '!examples', '!@langchain/classic'];
+  const FILTER_STRING = FILTERS.join(' --filter ');
 
   await run(
     sandbox,
     "Installing dependencies with pnpm...",
-    `cd ${MOUNT_PATH} && pnpm install --store-dir ${PNPM_STORE} --frozen-lockfile --filter '!@langchain/community' --network-concurrency=5 || pnpm install --store-dir ${PNPM_STORE} --filter '!@langchain/community' --network-concurrency=5`
+    `cd ${MOUNT_PATH} && pnpm install --store-dir ${PNPM_STORE} --frozen-lockfile --filter ${FILTER_STRING} --network-concurrency=5 || pnpm install --store-dir ${PNPM_STORE} --filter ${FILTER_STRING} --network-concurrency=5`
   );
 
   // -----------------------------------------------------------------------
-  // 6. Run unit tests to verify the environment
+  // 6. Build the project so TypeScript declarations are available
+  // -----------------------------------------------------------------------
+
+  step("🔨", "Building the project...");
+  await run(
+    sandbox,
+    "Building workspace packages...",
+    `cd ${MOUNT_PATH} && pnpm --filter ${FILTER_STRING} build`,
+    { verbose: true }
+  );
+  step("✅", "Build succeeded!");
+
+  // -----------------------------------------------------------------------
+  // 7. Run unit tests to verify the environment
   // -----------------------------------------------------------------------
 
   step("🧪", "Running unit tests to verify the environment...");
@@ -208,8 +262,8 @@ async function main() {
   );
 
   step("🧹", "Closing sandbox...");
-  await sandbox.close();
-  info("Sandbox destroyed — volume data persisted.");
+  await sandbox.kill();
+  info("Sandbox terminated — volume data persisted.");
 
   // Parse the du output (e.g. "3.4G\t/data/repo\n") for the summary line.
   const duSize = duOutput.trim().split(/\s+/)[0] ?? "unknown";
@@ -220,9 +274,29 @@ async function main() {
     `(capacity: ${(volume.capacity / 1024 / 1024 / 1024).toFixed(1)} GB)`
   );
 
-  step("🎉", "Volume setup complete! The review agent can now use this volume.");
-  info(`Volume slug: ${VOLUME_SLUG}`);
-  info(`Mount path: ${MOUNT_PATH}`);
+  // -----------------------------------------------------------------------
+  // 8. Create a snapshot from the volume for concurrent sandbox use
+  // -----------------------------------------------------------------------
+
+  step("📸", "Creating snapshot from volume...");
+
+  // Delete existing snapshot if present (snapshots are immutable — we must
+  // recreate to pick up volume changes).
+  const existingSnapshot = await client.snapshots.get(SNAPSHOT_SLUG);
+  if (existingSnapshot) {
+    info(`Deleting existing snapshot "${SNAPSHOT_SLUG}"...`);
+    await client.snapshots.delete(SNAPSHOT_SLUG);
+  }
+
+  const snapshot = await client.volumes.snapshot(volume.slug, {
+    slug: SNAPSHOT_SLUG,
+  });
+  info(`Snapshot created: ${snapshot.slug} (${snapshot.flattenedSize} bytes)`);
+
+  step("🎉", "Volume + snapshot setup complete! The review agent can now use the snapshot.");
+  info(`Volume slug:   ${VOLUME_SLUG}`);
+  info(`Snapshot slug: ${SNAPSHOT_SLUG}`);
+  info(`Repo path:     ${MOUNT_PATH}`);
 }
 
 main().catch((err) => {
