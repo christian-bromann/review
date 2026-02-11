@@ -38,7 +38,7 @@ export async function runReview(
     summary: z
       .string()
       .describe(
-        "Overall review summary. Start with a thank-you. For approvals, keep it short (e.g. 'Thanks for the contribution! LGTM 👍'). Don't re-explain the code or include sections like Summary/Analysis/Verification. Only elaborate when requesting changes or flagging issues. Use markdown."
+        "Overall review summary. Start with a thank-you. For approvals with no line comments, keep it short (e.g. 'Thanks for the contribution! LGTM 👍'). If you have multiple line comments, add one brief sentence summarizing the themes (e.g. 'A few edge-case and error-handling suggestions below.') — but don't rehash each comment individually. NEVER describe what the PR does or how the implementation works — the author already knows. NEVER praise the implementation quality (e.g. 'excellent implementation', 'comprehensive and well-tested', 'well-structured') — that just parrots the PR description. Don't include sections like Summary/Analysis/Verification. Use markdown."
       ),
     verdict: z
       .enum(["comment", "approve", "request_changes"])
@@ -61,11 +61,11 @@ export async function runReview(
           body: z
             .string()
             .describe(
-              "Comment text in markdown. For code suggestions, use:\n```suggestion\nreplacement code here\n```"
+              "Comment text in markdown. For code suggestions, use GitHub's suggestion syntax. CRITICAL: the replacement code inside the suggestion block MUST preserve the exact leading whitespace (indentation) of the original line in the diff. Look at the diff to see how many spaces/tabs the line uses and replicate them exactly. Example — if the original line is '      await foo();' (6 spaces), the suggestion must also have 6 spaces:\n```suggestion\n      await bar();\n```"
             ),
         })
       )
-      .describe("Line-specific review comments on the diff"),
+      .describe("Line-specific review comments. ONLY include comments that contain actionable feedback (bugs, suggestions, questions, requested changes). Do NOT include praise, observations, or commentary that doesn't ask the author to do something or consider something specific. If you have no actionable line comments, return an empty array."),
   });
 
   // The submit_review tool is HITL-gated — the agent calls it to propose a
@@ -126,7 +126,10 @@ pnpm install --store-dir ${PNPM_STORE}
     model,
     backend: sandbox,
     tools: [submitReviewTool],
-    skills: ["./.agents/skills/pr-review/SKILL.md"],
+    skills: [
+      "./.agents/skills/pr-review/SKILL.md",
+      `${repoDir}/AGENTS.md`,
+    ],
     interruptOn: { submit_review: true },
     checkpointer,
     systemPrompt: `You are an expert code reviewer working inside an isolated sandbox.
@@ -156,11 +159,13 @@ After checkout, run \`git diff origin/${pr.base.ref}...HEAD\` to see all changes
 
 ## Tone & wording rules (CRITICAL — follow these strictly)
 - **Start with a thank-you** — e.g. "Thanks for the contribution!" or "Thanks for tackling this!"
-- **Don't state the obvious** — never re-explain what the code does or how the fix works. The author already knows
-- **Keep approvals short** — if the PR looks good, just say "LGTM 👍" with a brief thank-you. No need for "Summary", "Analysis", "Code Quality", "Verification", or "Risk Assessment" sections
+- **Don't state the obvious** — never re-explain what the code does or how the fix works. The author already knows. Don't describe the implementation approach, the problem being solved, or how the pieces fit together — all of that is visible in the diff and PR description. Never praise the implementation quality (e.g. "excellent implementation", "comprehensive and well-tested", "well-structured approach") — that's just parroting the PR description in different words
+- **Keep approvals short** — if the PR looks good, just say "LGTM 👍" with a brief thank-you. No sentences evaluating the PR's scope, approach, or quality. No need for "Summary", "Analysis", "Code Quality", "Verification", or "Risk Assessment" sections
 - **Skip code quality commentary** unless there are severe issues not caught by automated tooling (prettier, eslint, CI)
-- **Don't duplicate information** — the diff speaks for itself; don't re-describe what it shows
+- **Don't duplicate information** — the diff speaks for itself; don't re-describe what it shows. The summary should contain a thank-you and verdict. If you have multiple line comments, add one brief sentence summarizing the themes (e.g. "A few edge-case and error-handling suggestions below.") — but don't rehash each comment individually
+- **Only include actionable line comments** — every inline comment must ask the author to do something or consider something specific (fix a bug, handle an edge case, rename something, add a test, etc.). Do NOT post comments that are just praise ("Good solution!", "Nice work here"), observations ("This ensures consistency"), or narration of what the code does. If you have nothing actionable to say about a line, don't comment on it. An empty comments array is perfectly fine
 - When you DO leave feedback, be constructive and suggest solutions
+- **Suggestion indentation** — when using \`\`\`suggestion\`\`\` blocks, the replacement code MUST have the exact same leading whitespace as the original line in the diff. Count the spaces/tabs from the diff and replicate them precisely
 
 ## Follow-up reviews
 If the PR context includes existing reviews or review comments:
