@@ -52,12 +52,18 @@ export async function runReview(
           line: z
             .number()
             .describe(
-              "Line number in the NEW version of the file where the comment applies. Must be a line that appears in the diff."
+              "The LAST (or only) line number in the NEW version of the file that this comment applies to. Must be a line that appears in the diff. CRITICAL for ```suggestion blocks: 'line' must be the LAST line of the code being replaced, not the first. For single-line suggestions, this is the one line being replaced. For multi-line suggestions, this is the last line of the replaced range (and set start_line to the first)."
+            ),
+          start_line: z
+            .number()
+            .optional()
+            .describe(
+              "For multi-line comments/suggestions: the FIRST line of the range in the NEW version of the file. Must be < 'line'. Omit for single-line comments. When using a ```suggestion block that replaces multiple lines, set start_line to the first line being replaced and 'line' to the last line being replaced."
             ),
           body: z
             .string()
             .describe(
-              "Comment text in markdown. For code suggestions, use GitHub's suggestion syntax. CRITICAL: the replacement code inside the suggestion block MUST preserve the exact leading whitespace (indentation) of the original line in the diff. Look at the diff to see how many spaces/tabs the line uses and replicate them exactly. Example — if the original line is '      await foo();' (6 spaces), the suggestion must also have 6 spaces:\n```suggestion\n      await bar();\n```"
+              "Comment text in markdown. For code suggestions, use GitHub's suggestion syntax. CRITICAL: the replacement code inside the suggestion block MUST preserve the exact leading whitespace (indentation) of the original line in the diff. Look at the diff to see how many spaces/tabs the line uses and replicate them exactly. Example — if the original line is '      await foo();' (6 spaces), the suggestion must also have 6 spaces:\n```suggestion\n      await bar();\n```\n\nFor multi-line replacements: set start_line and line to cover ALL the original lines being replaced, then put the full replacement inside the suggestion block."
             ),
         })
       )

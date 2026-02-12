@@ -26,7 +26,13 @@ export interface PRFile {
 
 export interface ReviewComment {
   path: string;
+  /** Last line of the range in the new file version (required). */
   line: number;
+  /**
+   * First line of a multi-line comment range in the new file version.
+   * Omit for single-line comments. When present, must be < `line`.
+   */
+  start_line?: number;
   body: string;
 }
 

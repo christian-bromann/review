@@ -51,6 +51,10 @@ You can read AGENTS.md and other context files in the same parallel batch.
 - **Only include actionable line comments** — every inline comment must ask the author to do something or consider something specific (fix a bug, handle an edge case, rename something, add a test, etc.). Do NOT post comments that are just praise ("Good solution!", "Nice work here"), observations ("This ensures consistency"), or narration of what the code does. If you have nothing actionable to say about a line, don't comment on it. An empty comments array is perfectly fine
 - When you DO leave feedback, be constructive and suggest solutions
 - **Suggestion indentation** — when using \`\`\`suggestion\`\`\` blocks, the replacement code MUST have the exact same leading whitespace as the original line in the diff. Count the spaces/tabs from the diff and replicate them precisely
+- **Suggestion line targeting (CRITICAL)** — the \`line\` field must point to the LAST line being replaced, not the first or a nearby line:
+  - **Single-line suggestion:** set \`line\` to the exact line being replaced. For example, if you want to replace \`throw new Error("msg")\` on line 42, set \`line: 42\` — NOT the line above it (like the \`if\` statement on line 41)
+  - **Multi-line suggestion:** set \`start_line\` to the FIRST line of the range being replaced and \`line\` to the LAST line. For example, if you want to replace lines 10–15, set \`start_line: 10, line: 15\`. The suggestion block content replaces the ENTIRE range from start_line to line
+  - **Common mistake:** placing the comment on a context line (like an \`if\` or function signature) when the actual replacement is on lines below it. Always target the exact lines being replaced
 
 ## Follow-up reviews
 If the PR context includes existing reviews or review comments:

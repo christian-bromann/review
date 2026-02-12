@@ -209,12 +209,20 @@ export async function postReviewToGitHub(
   };
 
   if (review.comments.length > 0) {
-    body.comments = review.comments.map((comment) => ({
-      path: comment.path,
-      line: comment.line,
-      side: "RIGHT",
-      body: comment.body,
-    }));
+    body.comments = review.comments.map((comment) => {
+      const c: Record<string, any> = {
+        path: comment.path,
+        line: comment.line,
+        side: "RIGHT",
+        body: comment.body,
+      };
+      // Multi-line comment: include start_line/start_side for the range
+      if (comment.start_line != null && comment.start_line < comment.line) {
+        c.start_line = comment.start_line;
+        c.start_side = "RIGHT";
+      }
+      return c;
+    });
   }
 
   const res = await fetch(

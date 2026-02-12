@@ -47,8 +47,11 @@ export function displayReview(review: Review) {
     log.step(`Line comments (${review.comments.length})`);
     for (let i = 0; i < review.comments.length; i++) {
       const comment = review.comments[i]!;
+      const lineRef = comment.start_line
+        ? `:${comment.start_line}-${comment.line}`
+        : `:${comment.line}`;
       log.info(
-        `${pc.cyan(`${i + 1}.`)} ${pc.bold(comment.path)}${pc.dim(`:${comment.line}`)}`
+        `${pc.cyan(`${i + 1}.`)} ${pc.bold(comment.path)}${pc.dim(lineRef)}`
       );
       log.message(pc.dim(comment.body));
     }
