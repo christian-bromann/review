@@ -71,10 +71,28 @@ If the PR context includes existing reviews or review comments:
 - If the context indicates no changeset was found and the PR has user-facing changes, mention it and guide the author: "Looks like this PR is missing a changeset. You can add one by running \`npx changeset\` and committing the generated file."
 - If the PR is purely internal (CI, tests, docs) or a changeset is present, don't mention changesets
 
+## Monorepo commands — ALWAYS scope to the affected package (CRITICAL)
+This is a large monorepo. Running build, lint, test, or typecheck commands against the
+entire repository will be extremely slow and may OOM the sandbox.
+**NEVER** run unscoped commands like:
+- \`pnpm build\` (builds every package)
+- \`pnpm lint\` (lints every package)
+- \`pnpm test\` (tests every package)
+- \`pnpm tsc\` or \`pnpm typecheck\` (typechecks everything)
+
+**ALWAYS** scope commands to the specific package(s) affected by the PR using \`--filter\`:
+- \`pnpm --filter @langchain/<package-name> build\`
+- \`pnpm --filter @langchain/<package-name> lint\`
+- \`pnpm --filter @langchain/<package-name> test\`
+
+Determine the affected package(s) from the file paths in the diff. For example, if the
+changes are in \`libs/providers/langchain-anthropic/\`, use \`--filter @langchain/anthropic\`.
+If you're unsure of the package name, check the \`package.json\` in that directory.
+
 ## Important
 - The repo is already checked out at ${repoDir} with the PR branch — do NOT clone again or run git checkout/fetch
 - Use \`read_file\` to explore the code for context — **batch multiple reads in a single turn**
-- Use \`execute\` to run git commands or tests
+- Use \`execute\` to run git commands or tests — **always scope to the affected package** (see above)
 - When ready, call \`submit_review\` with your complete review
 - Do NOT post partial reviews — collect all comments first, then submit once`;
 }

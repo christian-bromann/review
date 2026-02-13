@@ -13,6 +13,10 @@ import { postReviewToGitHub } from "./github.ts";
 import { displayReview, confirmAction } from "./display.ts";
 import { buildSystemPrompt, buildUserMessage } from "./message.ts";
 
+/** Directory on the sandbox where skills are uploaded (outside the repo).
+ *  Uses /tmp because /data is root-owned and the sandbox user is `app`. */
+const SANDBOX_SKILLS_DIR = "/tmp/skills";
+
 export async function runReview(
   sandbox: BaseSandbox,
   pr: PRData,
@@ -89,6 +93,21 @@ export async function runReview(
   // Agent setup
   // -----------------------------------------------------------------------
 
+  // Upload skills to the sandbox so the agent can access them.
+  // Local filesystem paths aren't available inside the sandbox, so we read
+  // each skill file locally and write it to a well-known location on the
+  // sandbox filesystem (outside the repo to avoid git interference).
+  const localSkillPath = new URL(
+    "../.agents/skills/pr-review/SKILL.md",
+    import.meta.url,
+  );
+  const skillContent = await Deno.readTextFile(localSkillPath);
+  const skillDestPath = `${SANDBOX_SKILLS_DIR}/pr-review/SKILL.md`;
+  await sandbox.execute(`mkdir -p ${SANDBOX_SKILLS_DIR}/pr-review`);
+  await sandbox.uploadFiles([
+    [skillDestPath, new TextEncoder().encode(skillContent)],
+  ]);
+
   const checkpointer = new MemorySaver();
   const threadId = `review-${pr.number}-${Date.now()}`;
   const config = { configurable: { thread_id: threadId } };
@@ -97,9 +116,7 @@ export async function runReview(
     model,
     backend: sandbox,
     tools: [submitReviewTool],
-    skills: [
-      "./.agents/skills/pr-review/SKILL.md",
-    ],
+    skills: [SANDBOX_SKILLS_DIR],
     interruptOn: { submit_review: true },
     checkpointer,
     systemPrompt: buildSystemPrompt(pr, { depsInstalled: context.depsInstalled }),

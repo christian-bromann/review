@@ -1,4 +1,3 @@
-import { Client } from "@deno/sandbox";
 import { DenoSandbox } from "@langchain/deno";
 import { spinner, log } from "@clack/prompts";
 import type { PRData } from "./types.ts";
@@ -27,45 +26,24 @@ export const INSTALL_EXCLUDE_FILTERS = [
 
 export async function createSandbox() {
   const s = spinner({ indicator: "timer" });
-  s.start("Creating writable volume from snapshot...");
+  s.start("Booting sandbox from snapshot...");
 
-  // Fork the read-only snapshot into a writable temporary volume.
-  // Volumes created from snapshots are copy-on-write, so this is fast and
-  // only consumes space for data that changes (git checkout, pnpm install).
-  const client = new Client();
-  const volumeSlug = `review-tmp-${Date.now()}`;
-  const volume = await client.volumes.create({
-    slug: volumeSlug,
-    region: VOLUME_REGION,
-    capacity: "10GB",
-    from: SNAPSHOT_SLUG,
-  });
-
-  s.message("Booting sandbox from writable volume...");
-
-  // Boot the sandbox from the writable volume (not the snapshot).
+  // Boot the sandbox directly from the read-only snapshot.
+  // Writes during the session (git checkout, pnpm install) are allowed but
+  // ephemeral — they're discarded once the sandbox session ends, which is
+  // exactly what we want for throwaway review sessions.
   const sandbox = await DenoSandbox.create({
     region: VOLUME_REGION,
     memory: "4GiB",
     timeout: "15m",
-    root: volume.slug,
+    root: SNAPSHOT_SLUG,
   });
 
   s.stop(`Sandbox ready (id: ${sandbox.id})`);
 
   return {
     sandbox,
-    close: async () => {
-      await sandbox.close();
-      // Clean up the temporary volume after the sandbox is destroyed
-      try {
-        await client.volumes.delete(volumeSlug);
-        log.info(`Temporary volume "${volumeSlug}" deleted`);
-      } catch {
-        // Best-effort cleanup — don't fail the whole run
-        log.warn(`Could not delete temporary volume "${volumeSlug}"`);
-      }
-    },
+    close: () => sandbox.close(),
   };
 }
 

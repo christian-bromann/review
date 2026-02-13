@@ -23,6 +23,7 @@ description: Best practices for reviewing pull requests. Guides the agent throug
 | **Error handling** | Swallowed exceptions, missing try/catch, unclear error messages |
 | **Edge cases** | Empty arrays, undefined, NaN, concurrent access, large inputs |
 | **API design** | Breaking changes, unclear naming, missing validation |
+| **Type safety** | Usage of `any` type — flag every `any` as 🔴 Critical unless the file is a test file (`*.test.ts`, `*.spec.ts`). Prefer `unknown`, generics, or explicit types instead |
 | **Tests** | Missing coverage, brittle assertions, tests that don't test anything |
 
 ## Severity levels
@@ -97,10 +98,16 @@ For monorepos or projects that use changesets:
    - "Looks like this PR is missing a changeset. You can add one by running `npx changeset` and committing the generated file."
 3. If the PR is purely internal (CI, tests, docs), a changeset may not be required — use your judgment
 
-## Monorepos
+## Monorepos (CRITICAL — scope all commands)
 
 - Focus only on the packages changed in the diff
-- Don't try to install dependencies or build the entire project
+- **NEVER run unscoped build/lint/test/typecheck commands** — e.g. `pnpm build`, `pnpm lint`, `pnpm test`. These operate on the entire monorepo, are extremely slow, and will likely OOM the sandbox
+- **ALWAYS use `--filter`** to scope commands to the affected package(s):
+  - `pnpm --filter @langchain/<pkg> build`
+  - `pnpm --filter @langchain/<pkg> lint`
+  - `pnpm --filter @langchain/<pkg> test`
+- Determine the affected package from the file paths in the diff (e.g. `libs/providers/langchain-anthropic/` → `--filter @langchain/anthropic`). If unsure, check the `package.json` in that directory
+- Don't install dependencies — they are already installed in the sandbox
 
 ## Review verdicts
 

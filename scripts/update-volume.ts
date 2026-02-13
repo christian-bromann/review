@@ -27,9 +27,11 @@ const REPO_URL = "https://github.com/langchain-ai/langchainjs.git";
 const MOUNT_PATH = "/data/repo";
 
 /**
- * Run a shell command inside the sandbox, using a timer spinner to show
- * elapsed time while the command executes.
- * Returns stdout on success; throws on failure.
+ * Run a shell command inside the sandbox, streaming stdout/stderr live
+ * via a clack taskLog (scrolling window of 15 lines).  After completion
+ * the last 15 lines are re-printed permanently so they stay visible.
+ *
+ * Returns the captured stdout on success; throws on failure.
  */
 async function run(
   sandbox: Sandbox,
@@ -37,60 +39,71 @@ async function run(
   command: string,
   { verbose = false } = {}
 ): Promise<string> {
-  const s = spinner({ indicator: "timer" });
-  s.start(description);
+  const TAIL = 15;
+  const tl = taskLog({ title: description, limit: verbose ? undefined : TAIL });
 
-  // SDK stdout piping is unreliable — redirect to files and read back.
-  await sandbox.fs.writeTextFile("/tmp/_cmd.sh", command);
-  const { status } = await sandbox.sh`bash /tmp/_cmd.sh >/tmp/_out 2>/tmp/_err`.noThrow();
-  const stdout = await sandbox.fs.readTextFile("/tmp/_out").catch(() => "");
-  const stderr = await sandbox.fs.readTextFile("/tmp/_err").catch(() => "");
+  const child = await sandbox.spawn("bash", {
+    args: ["-c", command],
+    stdout: "piped",
+    stderr: "piped",
+  });
 
-  const stdoutLines = stdout.trimEnd().split("\n");
+  const stdoutLines: string[] = [];
+  /** Last N non-empty lines for the permanent post-run display. */
+  const tailLines: string[] = [];
+
+  /** Read a ReadableStream line-by-line, piping each to the taskLog. */
+  async function streamLines(
+    stream: ReadableStream<Uint8Array> | null,
+    collector: string[] | null,
+    style: (s: string) => string
+  ) {
+    if (!stream) return;
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of stream) {
+      buffer += decoder.decode(chunk, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!; // keep incomplete trailing line in buffer
+      for (const line of lines) {
+        collector?.push(line);
+        if (line.trim()) {
+          tl.message(style(line));
+          tailLines.push(line);
+          if (tailLines.length > TAIL) tailLines.shift();
+        }
+      }
+    }
+    // Flush whatever remains after the stream closes
+    const remaining = buffer + decoder.decode();
+    if (remaining.trim()) {
+      collector?.push(remaining);
+      tl.message(style(remaining));
+      tailLines.push(remaining);
+      if (tailLines.length > TAIL) tailLines.shift();
+    }
+  }
+
+  // Read stdout + stderr concurrently
+  await Promise.all([
+    streamLines(child.stdout, stdoutLines, pc.dim),
+    streamLines(child.stderr, null, (s) => pc.dim(pc.red(s))),
+  ]);
+
+  const status = await child.status;
 
   if (!status.success) {
-    s.error(`${description} — failed (exit ${status.code})`);
-
-    // Show truncated stdout (first 10 + last 30 lines) in dim gray
-    if (stdout.trim()) {
-      const head = stdoutLines.slice(0, 10);
-      const tail = stdoutLines.length > 10 ? stdoutLines.slice(-30) : [];
-      const skipped = stdoutLines.length - head.length - tail.length;
-      const lines = [
-        ...head,
-        ...(skipped > 0 ? [`... (${skipped} more lines)`] : []),
-        ...tail,
-      ];
-      log.message(pc.dim(lines.join("\n")));
-    }
-
-    if (stderr.trim()) {
-      const stderrLines = stderr.trimEnd().split("\n");
-      const lines = verbose ? stderrLines : stderrLines.slice(-30);
-      log.error(lines.join("\n"));
-    }
-
+    tl.error(`${description} — failed (exit ${status.code})`);
     throw new Error(`Command failed: ${description}`);
   }
 
-  // Success
-  s.stop(description);
-
-  if (stdout.trim()) {
-    if (verbose) {
-      log.message(pc.dim(stdoutLines.join("\n")));
-    } else {
-      const head = stdoutLines.slice(0, 20);
-      const remaining = stdoutLines.length - head.length;
-      const lines = [
-        ...head,
-        ...(remaining > 0 ? [`... (${remaining} more lines)`] : []),
-      ];
-      log.message(pc.dim(lines.join("\n")));
-    }
+  // taskLog.success() clears the live output, so re-print the tail permanently
+  tl.success(description);
+  if (tailLines.length > 0) {
+    log.message(pc.dim(tailLines.join("\n")));
   }
 
-  return stdout;
+  return stdoutLines.join("\n");
 }
 
 async function main() {
